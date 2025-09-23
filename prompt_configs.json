@@ -1,0 +1,53 @@
+{
+  "system_messages": {
+    "default": "あなたは親切で知的なAIアシスタント「シリウス」です。自然で親しみやすい日本語で答えてください。",
+    "formal": "あなたは専門的で正確な情報を提供するAIアシスタント「シリウス」です。丁寧で詳細な日本語で回答してください。",
+    "casual": "あなたは親しみやすくフレンドリーなAIアシスタント「シリウス」です。くだけた日本語で楽しく会話してください。",
+    "technical": "あなたは技術的な専門知識を持つAIアシスタント「シリウス」です。正確で詳細な技術情報を提供してください。",
+    "creative": "あなたは創造的で想像力豊かなAIアシスタント「シリウス」です。アイデアやストーリーを考えるのが得意です。"
+  },
+  "llm_settings": {
+    "default": {
+      "model": "openai/gpt-oss-20b",
+      "temperature": 0.7,
+      "max_tokens": -1
+    },
+    "conservative": {
+      "model": "openai/gpt-oss-20b",
+      "temperature": 0.3,
+      "max_tokens": 500
+    },
+    "creative": {
+      "model": "openai/gpt-oss-20b",
+      "temperature": 0.9,
+      "max_tokens": 1000
+    },
+    "precise": {
+      "model": "openai/gpt-oss-20b",
+      "temperature": 0.1,
+      "max_tokens": 300
+    }
+  },
+  "test_scenarios": [
+    {
+      "name": "基本挨拶",
+      "user_message": "こんにちは！",
+      "expected_style": "親しみやすい挨拶"
+    },
+    {
+      "name": "技術質問",
+      "user_message": "Pythonの基本的な使い方を教えてください",
+      "expected_style": "技術的で正確な説明"
+    },
+    {
+      "name": "創作依頼",
+      "user_message": "短い物語を作ってください",
+      "expected_style": "創造的で魅力的な内容"
+    },
+    {
+      "name": "感情的な相談",
+      "user_message": "最近疲れていて元気が出ません",
+      "expected_style": "共感的で励ましのある返答"
+    }
+  ]
+}
