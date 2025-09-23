@@ -21,6 +21,8 @@ sys.path.append('/Users/kotaniryota/NLAB/sirius_face_anim/python')
 # voicevox_coreパッケージのパスを追加
 sys.path.append('/Users/kotaniryota/NLAB/sirius_face_anim/python/lib/python3.13/site-packages')
 from audioquery_phoneme import AudioQueryLipSyncSpeaker, TalkingModeController, ExpressionController
+from expression_parser import RealTimeExpressionController, ExpressionParser
+from expression_validator import validate_and_fix_expression_tags
 
 # ログ設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -86,6 +88,20 @@ class LLMFaceController:
         except Exception as e:
             logger.error(f"❌ おしゃべりモード制御システム初期化失敗: {e}")
             self.talking_mode_controller = None
+        
+        # リアルタイム表情制御クラス初期化
+        try:
+            self.realtime_expression_controller = RealTimeExpressionController(
+                self.expression_controller, 
+                self.voice_controller
+            )
+            logger.info("✅ リアルタイム表情制御システム初期化完了")
+        except Exception as e:
+            logger.error(f"❌ リアルタイム表情制御システム初期化失敗: {e}")
+            self.realtime_expression_controller = None
+        
+        # 表情パーサー初期化
+        self.expression_parser = ExpressionParser()
         
         # システム設定
         self.conversation_history = []  # 会話履歴
@@ -243,6 +259,9 @@ class LLMFaceController:
             if response and "choices" in response:
                 ai_response = response["choices"][0]["message"]["content"]
                 
+                # 表情タグを検証・修正
+                ai_response = validate_and_fix_expression_tags(ai_response)
+                
                 # 会話履歴に追加
                 self.conversation_history.append({
                     "user": user_message,
@@ -263,13 +282,14 @@ class LLMFaceController:
             logger.error(f"LLM応答取得エラー: {e}")
             return None
     
-    async def speak_with_lipsync(self, text: str, style_id: Optional[int] = None) -> bool:
+    async def speak_with_lipsync(self, text: str, style_id: Optional[int] = None, enable_expression_parsing: bool = True) -> bool:
         """
         AudioQuery音韻解析を使用して音声合成とリップシンクを実行
         
         Args:
             text: 話すテキスト
             style_id: 音声スタイルID
+            enable_expression_parsing: 表情タグ解析を有効にするか
             
         Returns:
             成功/失敗
@@ -277,17 +297,40 @@ class LLMFaceController:
         if not self.voice_controller:
             logger.error("音声制御システムが初期化されていません")
             return False
-        
+
         if self.is_speaking:
             logger.warning("既に発話中です")
             return False
-        
+
         try:
             self.is_speaking = True
             logger.info(f"音声合成開始: {text[:30]}...")
             
-            # AudioQuery音韻解析による発話
-            success = await self.voice_controller.speak_with_audioquery_lipsync(text, style_id)
+            # 表情タグが含まれているかチェック
+            if enable_expression_parsing and self.realtime_expression_controller:
+                has_expression_tags = '<' in text and '>' in text and '</' in text
+                
+                if has_expression_tags:
+                    logger.info("表情タグを検出、リアルタイム表情制御で発話します")
+                    
+                    # 表情タグを解析
+                    segments = self.expression_parser.parse_expression_text(text)
+                    clean_text = self.expression_parser.remove_expression_tags(text)
+                    
+                    logger.info(f"クリーンテキスト: {clean_text}")
+                    logger.info(f"表情セグメント数: {len(segments)}")
+                    
+                    # 実際の音声合成を並行実行
+                    success = await self.realtime_expression_controller.speak_with_dynamic_expressions(
+                        text, "neutral"
+                    )
+                else:
+                    logger.info("表情タグなし、通常の発話を実行します")
+                    success = await self.voice_controller.speak_with_audioquery_lipsync(text, style_id)
+            else:
+                # 通常のAudioQuery音韻解析による発話
+                logger.info("通常の発話を実行します")
+                success = await self.voice_controller.speak_with_audioquery_lipsync(text, style_id)
             
             if success:
                 logger.info("音声合成完了")
@@ -382,6 +425,14 @@ class LLMFaceController:
                 logger.info("発話を停止しました")
             except Exception as e:
                 logger.error(f"発話停止エラー: {e}")
+        
+        # リアルタイム表情制御も停止
+        if self.realtime_expression_controller:
+            try:
+                self.realtime_expression_controller.stop_playback()
+                logger.info("リアルタイム表情制御を停止しました")
+            except Exception as e:
+                logger.error(f"リアルタイム表情制御停止エラー: {e}")
         
         self.is_speaking = False
     

@@ -409,9 +409,9 @@ class InputPanel(QWidget):
         self.expression_combo = QComboBox()
         self.expression_combo.addItems([
             "neutral", "happy", "sad", "angry", "surprised", 
-            "confused", "thinking", "sleepy", "excited"
+            "crying", "hurt", "wink", "mouth3", "pien"
         ])
-        self.expression_combo.setCurrentText("happy")
+        self.expression_combo.setCurrentText("neutral")
         self.expression_combo.setMaximumHeight(28)  # 高さ制限
         self.expression_combo.setStyleSheet("""
             QComboBox {
