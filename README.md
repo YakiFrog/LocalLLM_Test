@@ -21,11 +21,13 @@
 ### 特徴
 
 - 🤖 **ローカルLLM統合**: LM Studio経由でMistral等のモデルを使用
-- 🎭 **リアルタイム表情制御**: 会話内容に応じた自動表情切り替え
+- � **高精度音声入力**: OpenAI Whisper largeモデルによる日本語音声認識
+- �🎭 **リアルタイム表情制御**: 会話内容に応じた自動表情切り替え
 - 🗣️ **高品質音声合成**: VOICEVOX AudioQueryによる自然な音声
 - 👄 **精密リップシンク**: 音韻データに基づく口パク制御
 - 🎨 **表情タグシステム**: LLM応答での感情表現
 - 🖥️ **統合UI**: PySide6によるモダンなユーザーインターface
+- 🎯 **ハンズフリー操作**: 音声入力による完全音声対話システム
 
 ## ✨ 主な機能
 
@@ -35,7 +37,22 @@
 - 複数のプロンプト設定（カジュアル、技術的、教育的など）
 - LLMモデル設定の動的変更
 
-### 🎭 表情制御機能
+### � 音声入力機能（NEW!）
+- **高精度音声認識**: OpenAI Whisper（largeモデル）による日本語音声認識
+- **リアルタイム録音**: ワンクリックで音声録音開始・停止
+- **音声品質最適化**: 
+  - 16kHz サンプリングレート（Whisper最適化）
+  - ノイズ除去・音量正規化
+  - 最小録音時間制限（1秒以上）
+- **視覚的フィードバック**: 録音状態の色彩表示・進行状況表示
+- **自動テキスト変換**: 音声からテキストへの自動変換・入力欄への自動挿入
+- **高精度設定**:
+  - 決定論的出力（temperature=0.0）
+  - ノイズフィルタリング
+  - 日本語特化プロンプト
+  - 句読点自動除去
+
+### �🎭 表情制御機能
 - **10種類の表情モード**:
   - `neutral` - 普通・中立的
   - `happy` - 幸せ・喜び・明るい
@@ -66,6 +83,7 @@ graph TB
     subgraph "ユーザーインターフェース"
         UI[sync_siriusface.py<br/>PySide6 GUI]
         Input[メッセージ入力]
+        Voice[🎤音声入力<br/>Whisper認識]
         Settings[設定パネル<br/>表情・モデル・プロンプト]
     end
     
@@ -73,34 +91,41 @@ graph TB
         Controller[llm_face_controller.py<br/>LLM統合制御]
         Parser[expression_parser.py<br/>表情解析]
         Validator[expression_validator.py<br/>タグ検証]
+        VoiceRecorder[VoiceRecorder<br/>音声録音・認識]
     end
     
     subgraph "外部サービス"
         LM[LM Studio<br/>ローカルLLM]
-        Voice[VOICEVOX<br/>AudioQuery]
+        Voice_API[VOICEVOX<br/>AudioQuery]
         Face[表情サーバー<br/>main.py]
+        Whisper[OpenAI Whisper<br/>large model]
     end
     
     subgraph "シリウスハードウェア"
         Display[表情ディスプレイ]
         Speaker[スピーカー]
         Mouth[口パク制御]
+        Microphone[🎤マイク]
     end
     
     UI --> Controller
     Input --> Controller
+    Voice --> VoiceRecorder
+    VoiceRecorder --> Whisper
+    Whisper --> Controller
     Settings --> Controller
     
     Controller --> LM
-    Controller --> Voice
+    Controller --> Voice_API
     Controller --> Face
     Controller --> Parser
     Controller --> Validator
     
     Parser --> Face
-    Voice --> Speaker
+    Voice_API --> Speaker
     Face --> Display
     Face --> Mouth
+    VoiceRecorder --> Microphone
     
     LM -.->|表情タグ付き応答| Controller
     Controller -.->|リアルタイム同期| Display
@@ -307,13 +332,29 @@ source bin/activate
 pip install -r requirements.txt
 ```
 
-4. **依存パッケージ**
+### 依存パッケージ
+
 ```bash
 # LocalLLM_Test環境
-pip install PySide6 requests numpy qasync
+pip install PySide6 requests numpy qasync openai-whisper pyaudio SpeechRecognition
 
 # sirius_face_anim環境  
 pip install voicevox_core numpy requests websockets
+```
+
+#### 音声認識追加パッケージ
+- **openai-whisper**: 高精度音声認識エンジン
+- **pyaudio**: 音声録音・再生ライブラリ  
+- **SpeechRecognition**: 音声認識統合フレームワーク
+- **ffmpeg**: 音声ファイル処理（システムレベル）
+
+#### macOS追加設定
+```bash
+# HomebrewでFFmpegをインストール（Whisper用）
+brew install ffmpeg
+
+# マイクアクセス許可（システム設定で手動設定）
+# システム設定 → プライバシーとセキュリティ → マイク → Python/Terminal許可
 ```
 
 ## 🎮 使用方法
@@ -351,15 +392,31 @@ python sync_siriusface.py
 
 ### UI操作方法
 
+#### テキスト入力
 1. **メッセージ入力**: テキストエリアにメッセージを入力
 2. **送信**: 
    - 送信ボタンクリック
    - Cmd+Enter（macOS）/ Ctrl+Enter（Windows）
-3. **設定変更**:
-   - **表情**: 初期表情を選択
-   - **LLMモデル**: 使用するモデル設定
-   - **プロンプト**: 会話の性格・スタイル
-4. **履歴クリア**: 会話履歴をリセット
+3. **入力クリア**: Escキーで入力欄をクリア
+
+#### 🎤 音声入力（NEW!）
+1. **録音開始**: 「🎤 音声入力開始」ボタンをクリック
+2. **音声録音**: マイクに向かって**はっきりと**日本語で話す
+   - 推奨録音時間: 1-10秒
+   - 推奨距離: マイクから5-10cm
+   - 静かな環境で録音
+3. **録音停止**: 「⏹️ 音声入力停止」ボタンをクリック
+4. **自動変換**: 音声が自動的にテキストに変換され入力欄に挿入
+5. **確認・送信**: 認識結果を確認後、送信ボタンで会話開始
+
+#### 設定変更
+- **表情**: 初期表情を選択
+- **LLMモデル**: 使用するモデル設定
+- **プロンプト**: 会話の性格・スタイル
+
+#### その他機能  
+- **履歴クリア**: 会話履歴をリセット
+- **プロンプト編集**: 「編集」ボタンでカスタムプロンプト作成
 
 ### プロンプト管理
 
@@ -373,6 +430,42 @@ python sync_siriusface.py
 - `news_reporter` - ニュース報道専用
 
 ## ⚙️ 設定
+
+### 🎤 音声入力設定
+
+#### Whisper設定
+```python
+# VoiceRecorder クラス内設定
+whisper_settings = {
+    "model": "large",                    # 高精度モデル（base/large選択可）
+    "language": "ja",                    # 日本語特化
+    "temperature": 0.0,                  # 決定論的出力
+    "fp16": False,                      # CPU最適化
+    "compression_ratio_threshold": 2.4,  # ノイズ除去
+    "logprob_threshold": -1.0,          # 低信頼度フィルタ
+    "no_speech_threshold": 0.6,         # 無音判定
+    "initial_prompt": "以下は日本語の音声です。"  # コンテキスト設定
+}
+```
+
+#### 音声録音設定
+```python
+# VoiceRecorder音質設定
+audio_settings = {
+    "sample_rate": 16000,        # Whisper推奨サンプリングレート
+    "chunk_size": 1024,          # バッファサイズ
+    "channels": 1,               # モノラル録音
+    "format": "paInt16",         # 16bit PCM
+    "min_record_time": 1.0       # 最小録音時間（秒）
+}
+```
+
+#### 音声認識最適化のコツ
+1. **📍 マイク距離**: 5-10cm の至近距離
+2. **🔇 静音環境**: エアコン・ファンなどのノイズを最小化
+3. **🗣️ 明瞭な発音**: ゆっくり・はっきりと話す
+4. **⏱️ 適切な長さ**: 1-10秒程度の発話
+5. **⏸️ 間を置く**: 話し終わったら1秒程度待ってから停止
 
 ### 設定ファイル
 
@@ -563,19 +656,50 @@ python test_mistral_model.py
 
 ### よくある問題
 
-#### 1. 音声が出ない
+#### 🎤 音声入力関連
+
+##### 1. 音声が認識されない
+- **原因**: マイクアクセス許可がない
+- **解決**: 
+  ```bash
+  # macOS: システム設定でマイクアクセスを許可
+  システム設定 → プライバシーとセキュリティ → マイク → Terminal/Python を許可
+  ```
+
+##### 2. 認識精度が低い
+- **原因**: 環境音・マイク距離・発音
+- **解決**:
+  - マイクから5-10cm の距離で話す
+  - 静かな環境で録音
+  - はっきりと明瞭に発音
+  - 1-10秒の適切な長さで話す
+
+##### 3. Whisperモデルのロードが遅い
+- **原因**: largeモデルのサイズ（約3GB）
+- **解決**:
+  - 初回のみダウンロードが発生（時間がかかる）
+  - 十分なストレージ容量を確保
+  - ネットワーク環境を確認
+
+##### 4. "FP16 is not supported on CPU"警告
+- **原因**: CPUでのFP16処理警告（正常動作）
+- **解決**: 警告は自動で抑制済み・動作に影響なし
+
+#### 🎭 システム全般
+
+##### 1. 音声が出ない
 - **原因**: VOICEVOX設定パスが不正
 - **解決**: `llm_face_controller.py`のvoicevox_configを確認
 
-#### 2. 表情が変わらない
+##### 2. 表情が変わらない
 - **原因**: 表情サーバー未起動 or 接続エラー
 - **解決**: `python main.py`で表情サーバーを起動
 
-#### 3. LLM応答がない
+##### 3. LLM応答がない
 - **原因**: LM Studio未起動 or モデル未ロード
 - **解決**: LM Studioでモデルをロードして起動
 
-#### 4. 表情タグが認識されない
+##### 4. 表情タグが認識されない
 - **原因**: 不正なタグ形式
 - **解決**: `<表情名>テキスト</表情名>`の正しい形式を使用
 
@@ -607,16 +731,17 @@ graph TB
     subgraph "LocalLLM_Test/"
         A[README.md]
         B[launch_sirius_system.py]
-        C[sync_siriusface.py]
+        C[expression_parser.py]
         D[llm_face_controller.py]
         E[expression_parser.py]
         F[main.py]
+        G[🎤voice_recorder.py<br/>音声録音・認識]
         
         subgraph "prompts/"
-            G[sirius_expressions.txt]
-            H[emotional.txt]
-            I[casual.txt]
-            J[technical.txt]
+            H[sirius_expressions.txt]
+            I[emotional.txt]
+            J[casual.txt]
+            K[technical.txt]
         end
         
         subgraph "bin/"

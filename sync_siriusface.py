@@ -8,6 +8,10 @@ import sys
 import asyncio
 from pathlib import Path
 from typing import Optional, Dict, Any
+import tempfile
+import os
+import threading
+import time
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -18,8 +22,181 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal, QThread
 from PySide6.QtGui import QFont, QIcon, QPalette, QColor
 
+# 音声関連のインポート
+import speech_recognition as sr
+import pyaudio
+import wave
+import whisper
+
 # LLM Face Controllerのインポート
 from llm_face_controller import LLMFaceController
+
+class VoiceRecorder(QThread):
+    """音声録音・認識処理用スレッド"""
+    recording_started = Signal()
+    recording_stopped = Signal()
+    transcription_ready = Signal(str)
+    error_occurred = Signal(str)
+    
+    def __init__(self, model_name="medium"):
+        super().__init__()
+        self.is_recording = False
+        self.audio_data = []
+        # 音声品質設定（日本語音声認識に最適化・高品質）
+        self.sample_rate = 16000        # Whisper推奨サンプルレート
+        self.chunk_size = 1024          # バッファサイズ
+        self.channels = 1               # モノラル録音
+        self.format = pyaudio.paInt16   # 16bit PCM
+        self.record_seconds_min = 1.0   # 最小録音時間（秒）
+        
+        # Whisperモデル（選択されたモデルを使用）
+        self.load_whisper_model(model_name)
+    
+    def load_whisper_model(self, model_name):
+        """Whisperモデルをロード"""
+        try:
+            # 警告を抑制
+            import warnings
+            warnings.filterwarnings("ignore", message="FP16 is not supported on CPU")
+            
+            print(f"🔄 Whisperモデル（{model_name}）をロード中...")
+            self.whisper_model = whisper.load_model(model_name)
+            print(f"✅ Whisperモデル（{model_name}）が正常にロードされました")
+        except Exception as e:
+            print(f"❌ Whisper {model_name}モデル読み込み失敗: {e}")
+            self.whisper_model = None
+    
+    def start_recording(self):
+        """録音開始"""
+        if not self.is_recording:
+            self.is_recording = True
+            self.audio_data = []
+            self.start()
+    
+    def stop_recording(self):
+        """録音停止"""
+        self.is_recording = False
+    
+    def run(self):
+        """録音処理実行"""
+        try:
+            # PyAudioの初期化
+            p = pyaudio.PyAudio()
+            
+            # ストリーム開始
+            stream = p.open(
+                format=self.format,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=self.chunk_size
+            )
+            
+            self.recording_started.emit()
+            
+            # 録音ループ
+            while self.is_recording:
+                try:
+                    data = stream.read(self.chunk_size, exception_on_overflow=False)
+                    self.audio_data.append(data)
+                except Exception as e:
+                    print(f"録音エラー: {e}")
+                    break
+            
+            # ストリーム停止
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+            
+            self.recording_stopped.emit()
+            
+            # 音声認識処理
+            if self.audio_data:
+                self.process_audio()
+                
+        except Exception as e:
+            self.error_occurred.emit(f"録音処理エラー: {str(e)}")
+    
+    def process_audio(self):
+        """音声データを処理してテキストに変換"""
+        try:
+            # 録音時間をチェック
+            total_frames = len(self.audio_data) * self.chunk_size
+            duration = total_frames / self.sample_rate
+            print(f"🎤 録音時間: {duration:.2f}秒")
+            
+            if duration < self.record_seconds_min:
+                self.error_occurred.emit(f"録音時間が短すぎます（{duration:.1f}秒）。{self.record_seconds_min}秒以上録音してください。")
+                return
+            
+            # 一時ファイルに音声データを保存
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                temp_filename = temp_file.name
+                
+                # WAVファイルとして保存（高品質設定）
+                with wave.open(temp_filename, 'wb') as wf:
+                    wf.setnchannels(self.channels)
+                    wf.setsampwidth(pyaudio.get_sample_size(self.format))
+                    wf.setframerate(self.sample_rate)
+                    
+                    # 音声データを結合して正規化
+                    audio_bytes = b''.join(self.audio_data)
+                    
+                    # 簡単な音量正規化（オプション）
+                    import array
+                    audio_array = array.array('h', audio_bytes)
+                    if len(audio_array) > 0:
+                        # 最大音量を取得
+                        max_amplitude = max(abs(sample) for sample in audio_array)
+                        if max_amplitude > 0:
+                            # 正規化係数を計算（70%の音量に調整）
+                            normalization_factor = int(32767 * 0.7 / max_amplitude)
+                            if normalization_factor > 1:
+                                audio_array = array.array('h', [min(32767, max(-32768, int(sample * normalization_factor))) for sample in audio_array])
+                                audio_bytes = audio_array.tobytes()
+                    
+                    wf.writeframes(audio_bytes)
+            
+            # Whisperで音声認識（高精度日本語設定）
+            if self.whisper_model:
+                try:
+                    print("🎤 音声認識処理開始...")
+                    # 日本語に特化した高精度設定でWhisperを実行
+                    result = self.whisper_model.transcribe(
+                        temp_filename, 
+                        language="ja",              # 日本語指定
+                        fp16=False,                 # CPUではFP16を無効化
+                        verbose=False,              # 詳細ログを無効化
+                        temperature=0.0,            # 決定論的出力（精度向上）
+                        compression_ratio_threshold=2.4,  # 圧縮率閾値（ノイズ除去）
+                        logprob_threshold=-1.0,     # 確率閾値（低信頼度フィルタ）
+                        no_speech_threshold=0.6,    # 無音判定閾値
+                        condition_on_previous_text=False,  # 前のテキストに依存しない
+                        initial_prompt="以下は日本語の音声です。",  # 日本語コンテキスト
+                        word_timestamps=False       # 単語レベルのタイムスタンプは不要
+                    )
+                    transcribed_text = result["text"].strip()
+                    
+                    # 結果の後処理（日本語特有の問題を修正）
+                    if transcribed_text:
+                        # 不要な空白や記号を除去
+                        transcribed_text = transcribed_text.replace("。", "").replace("、", "").strip()
+                        print(f"🎤 音声認識結果: '{transcribed_text}'")
+                        self.transcription_ready.emit(transcribed_text)
+                    else:
+                        print("⚠️ 音声が認識できませんでした（空の結果）")
+                        self.error_occurred.emit("音声が認識できませんでした。もう一度お試しください。")
+                except Exception as e:
+                    print(f"❌ Whisper音声認識エラー: {e}")
+                    self.error_occurred.emit(f"音声認識処理エラー: {str(e)}")
+            else:
+                self.error_occurred.emit("Whisperモデルが利用できません")
+            
+            # 一時ファイルを削除
+            os.unlink(temp_filename)
+            
+        except Exception as e:
+            self.error_occurred.emit(f"音声認識エラー: {str(e)}")
 
 class ConversationWorker(QThread):
     """会話処理用ワーカースレッド"""
@@ -264,8 +441,10 @@ class ConversationDisplay(QWidget):
         self.conversation_area.setReadOnly(True)
         self.conversation_area.setMinimumHeight(250)  # 400から250に縮小
         
-        # フォント設定
-        font = QFont("Yu Gothic UI", 10)
+        # フォント設定（macOS対応）
+        font = QFont("SF Pro Display", 10)
+        if not font.exactMatch():
+            font = QFont("Helvetica Neue", 10)
         self.conversation_area.setFont(font)
         
         # スタイル設定（ダークテーマ）
@@ -323,6 +502,14 @@ class InputPanel(QWidget):
     
     def __init__(self):
         super().__init__()
+        # 音声録音関連
+        self.current_whisper_model = "medium"  # デフォルトモデル
+        self.voice_recorder = VoiceRecorder(self.current_whisper_model)
+        self.voice_recorder.recording_started.connect(self.on_recording_started)
+        self.voice_recorder.recording_stopped.connect(self.on_recording_stopped)
+        self.voice_recorder.transcription_ready.connect(self.on_transcription_ready)
+        self.voice_recorder.error_occurred.connect(self.on_voice_error)
+        
         self.init_ui()
     
     def init_ui(self):
@@ -443,6 +630,49 @@ class InputPanel(QWidget):
         """)
         expression_layout.addWidget(self.expression_combo)
         
+        # Whisperモデル選択（コンパクト）
+        whisper_layout = QVBoxLayout()
+        whisper_layout.setSpacing(2)
+        whisper_label = QLabel("Whisper:")
+        whisper_label.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 12px;")
+        whisper_layout.addWidget(whisper_label)
+        self.whisper_combo = QComboBox()
+        self.whisper_combo.addItems([
+            "base", "small", "medium", "large"
+        ])
+        self.whisper_combo.setCurrentText(self.current_whisper_model)
+        self.whisper_combo.setMaximumHeight(28)
+        self.whisper_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 2px 4px;
+                min-width: 80px;
+                font-size: 11px;
+            }
+            QComboBox::drop-down {
+                border-left: 1px solid #555;
+                width: 16px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 3px solid transparent;
+                border-right: 3px solid transparent;
+                border-top: 3px solid #ffffff;
+                margin: 0 2px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                selection-background-color: #64B5F6;
+            }
+        """)
+        self.whisper_combo.currentTextChanged.connect(self.change_whisper_model)
+        whisper_layout.addWidget(self.whisper_combo)
+        
         # LLMモデル選択（コンパクト）
         model_layout = QVBoxLayout()
         model_layout.setSpacing(2)
@@ -558,6 +788,7 @@ class InputPanel(QWidget):
         
         # すべての設定を水平に配置
         settings_layout.addLayout(expression_layout)
+        settings_layout.addLayout(whisper_layout)
         settings_layout.addLayout(model_layout)
         settings_layout.addLayout(prompt_layout)
         settings_layout.addStretch()  # 右側に余白を追加
@@ -592,6 +823,31 @@ class InputPanel(QWidget):
         """)
         self.send_button.clicked.connect(self.send_message_clicked)
         
+        # 音声入力ボタン
+        self.voice_button = QPushButton("🎤 音声入力開始")
+        self.voice_button.setMinimumHeight(32)
+        self.voice_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5722;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #FF7043;
+            }
+            QPushButton:pressed {
+                background-color: #D84315;
+            }
+            QPushButton:disabled {
+                background-color: #424242;
+                color: #757575;
+            }
+        """)
+        self.voice_button.clicked.connect(self.toggle_voice_recording)
+        
         self.clear_button = QPushButton("履歴クリア")
         self.clear_button.setMinimumHeight(32)
         self.clear_button.setStyleSheet("""
@@ -613,6 +869,7 @@ class InputPanel(QWidget):
         self.clear_button.clicked.connect(self.clear_conversation)
         
         button_layout.addWidget(self.send_button)
+        button_layout.addWidget(self.voice_button)
         button_layout.addWidget(self.clear_button)
         
         # レイアウト組み立て
@@ -702,7 +959,9 @@ class InputPanel(QWidget):
         """入力欄の有効/無効を設定"""
         self.message_input.setEnabled(enabled)
         self.send_button.setEnabled(enabled)
+        self.voice_button.setEnabled(enabled)
         self.expression_combo.setEnabled(enabled)
+        self.whisper_combo.setEnabled(enabled)
         self.model_combo.setEnabled(enabled)
         self.prompt_combo.setEnabled(enabled)
     
@@ -717,6 +976,134 @@ class InputPanel(QWidget):
         self.prompt_combo.addItems(prompts)
         if current in prompts:
             self.prompt_combo.setCurrentText(current)
+    
+    def change_whisper_model(self):
+        """Whisperモデルを変更"""
+        new_model = self.whisper_combo.currentText()
+        if new_model != self.current_whisper_model:
+            # 現在の録音が実行中なら停止
+            if self.voice_recorder.is_recording:
+                self.voice_recorder.stop_recording()
+                self.voice_recorder.wait(2000)  # 停止を待つ
+            
+            # 新しいモデルでVoiceRecorderを再作成
+            self.current_whisper_model = new_model
+            old_recorder = self.voice_recorder
+            
+            # 新しいレコーダーを作成
+            self.voice_recorder = VoiceRecorder(new_model)
+            self.voice_recorder.recording_started.connect(self.on_recording_started)
+            self.voice_recorder.recording_stopped.connect(self.on_recording_stopped)
+            self.voice_recorder.transcription_ready.connect(self.on_transcription_ready)
+            self.voice_recorder.error_occurred.connect(self.on_voice_error)
+            
+            # 古いレコーダーをクリーンアップ
+            if old_recorder.isRunning():
+                old_recorder.quit()
+                old_recorder.wait(1000)
+            
+            # 親ウィンドウの会話表示にメッセージを追加
+            main_window = self.parent().parent().parent()
+            if hasattr(main_window, 'conversation_display'):
+                main_window.conversation_display.add_system_message(f"Whisperモデルを {new_model} に変更しました", "info")
+    
+    def toggle_voice_recording(self):
+        """音声録音の開始/停止を切り替え"""
+        if not self.voice_recorder.is_recording:
+            # 録音開始
+            self.voice_recorder.start_recording()
+        else:
+            # 録音停止
+            self.voice_recorder.stop_recording()
+    
+    def on_recording_started(self):
+        """録音開始時の処理"""
+        self.voice_button.setText("⏹️ 音声入力停止")
+        self.voice_button.setStyleSheet("""
+            QPushButton {
+                background-color: #F44336;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 13px;
+                border: 2px solid #FF5722;
+            }
+            QPushButton:hover {
+                background-color: #EF5350;
+                border: 2px solid #FF7043;
+            }
+            QPushButton:pressed {
+                background-color: #C62828;
+                border: 2px solid #D84315;
+            }
+        """)
+        
+        # 親ウィンドウの会話表示にメッセージを追加
+        main_window = self.parent().parent().parent()
+        if hasattr(main_window, 'conversation_display'):
+            main_window.conversation_display.add_system_message("🎤 音声録音中... 話してください", "info")
+    
+    def on_recording_stopped(self):
+        """録音停止時の処理"""
+        self.voice_button.setText("🎤 音声入力開始")
+        self.voice_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5722;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #FF7043;
+            }
+            QPushButton:pressed {
+                background-color: #D84315;
+            }
+        """)
+        
+        # 親ウィンドウの会話表示にメッセージを追加
+        main_window = self.parent().parent().parent()
+        if hasattr(main_window, 'conversation_display'):
+            main_window.conversation_display.add_system_message("🔄 音声を認識中...", "warning")
+    
+    def on_transcription_ready(self, text: str):
+        """音声認識完了時の処理"""
+        # メッセージ入力欄に認識されたテキストを設定
+        self.message_input.setText(text)
+        
+        # 親ウィンドウの会話表示にメッセージを追加
+        main_window = self.parent().parent().parent()
+        if hasattr(main_window, 'conversation_display'):
+            main_window.conversation_display.add_system_message(f"✅ 音声認識完了: {text}", "success")
+    
+    def on_voice_error(self, error_message: str):
+        """音声エラー時の処理"""
+        # 親ウィンドウの会話表示にエラーメッセージを追加
+        main_window = self.parent().parent().parent()
+        if hasattr(main_window, 'conversation_display'):
+            main_window.conversation_display.add_system_message(f"❌ {error_message}", "error")
+        
+        # ボタンを元の状態に戻す
+        self.voice_button.setText("🎤 音声入力開始")
+        self.voice_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5722;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #FF7043;
+            }
+            QPushButton:pressed {
+                background-color: #D84315;
+            }
+        """)
 
 class StatusPanel(QWidget):
     """ステータスパネルウィジェット"""
@@ -943,6 +1330,16 @@ class SiriusFaceAnimUI(QMainWindow):
             # オブジェクトを削除予約
             self.conversation_worker.deleteLater()
             self.conversation_worker = None
+        
+        # 音声録音スレッドのクリーンアップ
+        if hasattr(self.input_panel, 'voice_recorder'):
+            voice_recorder = self.input_panel.voice_recorder
+            if voice_recorder.isRunning():
+                voice_recorder.stop_recording()
+                voice_recorder.wait(2000)  # 2秒待機
+                if voice_recorder.isRunning():
+                    voice_recorder.quit()
+                    voice_recorder.wait(1000)  # さらに1秒待機
     
     def closeEvent(self, event):
         """ウィンドウクローズ時の処理"""
