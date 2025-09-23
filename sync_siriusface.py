@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QLineEdit, QComboBox, 
     QProgressBar, QScrollArea, QFrame, QSplitter, QGroupBox,
-    QCheckBox, QSpinBox, QSlider, QMessageBox, QDialog, QDialogButtonBox
+    QCheckBox, QSpinBox, QSlider, QMessageBox, QDialog, QDialogButtonBox, QMenu
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QThread
 from PySide6.QtGui import QFont, QIcon, QPalette, QColor
@@ -256,11 +256,13 @@ class ConversationDisplay(QWidget):
     
     def init_ui(self):
         layout = QVBoxLayout()
+        layout.setContentsMargins(5, 5, 5, 5)  # マージンを縮小
+        layout.setSpacing(3)  # 間隔を縮小
         
         # 会話履歴表示エリア
         self.conversation_area = QTextEdit()
         self.conversation_area.setReadOnly(True)
-        self.conversation_area.setMinimumHeight(400)
+        self.conversation_area.setMinimumHeight(250)  # 400から250に縮小
         
         # フォント設定
         font = QFont("Yu Gothic UI", 10)
@@ -325,8 +327,10 @@ class InputPanel(QWidget):
     
     def init_ui(self):
         layout = QVBoxLayout()
+        layout.setContentsMargins(5, 5, 5, 5)  # マージンを縮小
+        layout.setSpacing(5)  # 間隔を縮小
         
-        # メッセージ入力エリア
+        # メッセージ入力エリア（コンパクト化）
         input_group = QGroupBox("メッセージ入力")
         input_group.setStyleSheet("""
             QGroupBox {
@@ -334,8 +338,8 @@ class InputPanel(QWidget):
                 color: #ffffff;
                 border: 2px solid #555;
                 border-radius: 8px;
-                margin-top: 12px;
-                padding-top: 8px;
+                margin-top: 8px;  
+                padding-top: 4px;  
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -345,9 +349,11 @@ class InputPanel(QWidget):
             }
         """)
         input_layout = QVBoxLayout()
+        input_layout.setContentsMargins(8, 5, 8, 8)  # マージンを調整
         
         self.message_input = QTextEdit()
-        self.message_input.setMaximumHeight(100)
+        self.message_input.setMaximumHeight(60)  # 100から60に縮小
+        self.message_input.setMinimumHeight(60)
         self.message_input.setPlaceholderText("ここにメッセージを入力してください...")
         self.message_input.setStyleSheet("""
             QTextEdit {
@@ -365,10 +371,14 @@ class InputPanel(QWidget):
         # Enterキーでの送信を設定
         self.message_input.installEventFilter(self)
         
+        # 右クリックメニューで入力クリア機能を追加
+        self.message_input.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.message_input.customContextMenuRequested.connect(self.show_input_context_menu)
+        
         input_layout.addWidget(self.message_input)
         input_group.setLayout(input_layout)
         
-        # 設定パネル
+        # 設定パネル（水平レイアウトでコンパクト化）
         settings_group = QGroupBox("設定")
         settings_group.setStyleSheet("""
             QGroupBox {
@@ -376,8 +386,8 @@ class InputPanel(QWidget):
                 color: #ffffff;
                 border: 2px solid #555;
                 border-radius: 8px;
-                margin-top: 12px;
-                padding-top: 8px;
+                margin-top: 8px;  
+                padding-top: 4px;  
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -386,15 +396,15 @@ class InputPanel(QWidget):
                 color: #64B5F6;
             }
         """)
-        settings_layout = QVBoxLayout()
+        settings_layout = QHBoxLayout()  # 水平レイアウトに変更
+        settings_layout.setSpacing(15)  # 間隔を調整
+        settings_layout.setContentsMargins(8, 5, 8, 8)  # マージンを調整
         
-        # 第1行: 表情とLLMモデル
-        first_row = QHBoxLayout()
-        
-        # 表情選択
+        # 表情選択（コンパクト）
         expression_layout = QVBoxLayout()
+        expression_layout.setSpacing(2)  # 間隔を縮小
         expression_label = QLabel("表情:")
-        expression_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+        expression_label.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 12px;")  # フォントサイズ縮小
         expression_layout.addWidget(expression_label)
         self.expression_combo = QComboBox()
         self.expression_combo.addItems([
@@ -402,24 +412,26 @@ class InputPanel(QWidget):
             "confused", "thinking", "sleepy", "excited"
         ])
         self.expression_combo.setCurrentText("happy")
+        self.expression_combo.setMaximumHeight(28)  # 高さ制限
         self.expression_combo.setStyleSheet("""
             QComboBox {
                 background-color: #2b2b2b;
                 color: #ffffff;
                 border: 1px solid #555;
                 border-radius: 4px;
-                padding: 4px;
-                min-width: 100px;
+                padding: 2px 4px;  
+                min-width: 80px;  
+                font-size: 11px;  
             }
             QComboBox::drop-down {
                 border-left: 1px solid #555;
-                width: 20px;
+                width: 16px;  
             }
             QComboBox::down-arrow {
                 image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 4px solid #ffffff;
+                border-left: 3px solid transparent;
+                border-right: 3px solid transparent;
+                border-top: 3px solid #ffffff;
                 margin: 0 2px;
             }
             QComboBox QAbstractItemView {
@@ -431,10 +443,11 @@ class InputPanel(QWidget):
         """)
         expression_layout.addWidget(self.expression_combo)
         
-        # LLMモデル選択
+        # LLMモデル選択（コンパクト）
         model_layout = QVBoxLayout()
+        model_layout.setSpacing(2)
         model_label = QLabel("LLMモデル:")
-        model_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+        model_label.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 12px;")
         model_layout.addWidget(model_label)
         self.model_combo = QComboBox()
         self.model_combo.addItems([
@@ -442,24 +455,26 @@ class InputPanel(QWidget):
             "default", "conservative", "creative", "precise"
         ])
         self.model_combo.setCurrentText("mistral_default")
+        self.model_combo.setMaximumHeight(28)
         self.model_combo.setStyleSheet("""
             QComboBox {
                 background-color: #2b2b2b;
                 color: #ffffff;
                 border: 1px solid #555;
                 border-radius: 4px;
-                padding: 4px;
-                min-width: 120px;
+                padding: 2px 4px;
+                min-width: 100px;
+                font-size: 11px;
             }
             QComboBox::drop-down {
                 border-left: 1px solid #555;
-                width: 20px;
+                width: 16px;
             }
             QComboBox::down-arrow {
                 image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 4px solid #ffffff;
+                border-left: 3px solid transparent;
+                border-right: 3px solid transparent;
+                border-top: 3px solid #ffffff;
                 margin: 0 2px;
             }
             QComboBox QAbstractItemView {
@@ -471,38 +486,39 @@ class InputPanel(QWidget):
         """)
         model_layout.addWidget(self.model_combo)
         
-        first_row.addLayout(expression_layout)
-        first_row.addLayout(model_layout)
-        
-        # 第2行: プロンプト選択
-        second_row = QHBoxLayout()
-        
-        # プロンプト選択
+        # プロンプト選択（コンパクト）
         prompt_layout = QVBoxLayout()
+        prompt_layout.setSpacing(2)
         prompt_label = QLabel("プロンプト:")
-        prompt_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+        prompt_label.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 12px;")
         prompt_layout.addWidget(prompt_label)
+        
+        # プロンプトコンボボックスと編集ボタンを水平に配置
+        prompt_controls = QHBoxLayout()
+        prompt_controls.setSpacing(5)
+        
         self.prompt_combo = QComboBox()
-        # プロンプト一覧は初期化時に設定
         self.prompt_combo.setCurrentText("default")
+        self.prompt_combo.setMaximumHeight(28)
         self.prompt_combo.setStyleSheet("""
             QComboBox {
                 background-color: #2b2b2b;
                 color: #ffffff;
                 border: 1px solid #555;
                 border-radius: 4px;
-                padding: 4px;
-                min-width: 150px;
+                padding: 2px 4px;
+                min-width: 100px;
+                font-size: 11px;
             }
             QComboBox::drop-down {
                 border-left: 1px solid #555;
-                width: 20px;
+                width: 16px;
             }
             QComboBox::down-arrow {
                 image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 4px solid #ffffff;
+                border-left: 3px solid transparent;
+                border-right: 3px solid transparent;
+                border-top: 3px solid #ffffff;
                 margin: 0 2px;
             }
             QComboBox QAbstractItemView {
@@ -512,10 +528,11 @@ class InputPanel(QWidget):
                 selection-background-color: #64B5F6;
             }
         """)
-        prompt_layout.addWidget(self.prompt_combo)
         
-        # プロンプト編集ボタン
+        # プロンプト編集ボタン（小型化）
         prompt_edit_button = QPushButton("編集")
+        prompt_edit_button.setMaximumHeight(28)
+        prompt_edit_button.setMaximumWidth(40)
         prompt_edit_button.setStyleSheet("""
             QPushButton {
                 background-color: #FF9800;
@@ -523,8 +540,8 @@ class InputPanel(QWidget):
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-                padding: 4px 8px;
-                max-height: 24px;
+                padding: 2px 6px;
+                font-size: 10px;
             }
             QPushButton:hover {
                 background-color: #FFB74D;
@@ -534,20 +551,25 @@ class InputPanel(QWidget):
             }
         """)
         prompt_edit_button.clicked.connect(self.edit_prompt)
-        prompt_layout.addWidget(prompt_edit_button)
         
-        second_row.addLayout(prompt_layout)
-        second_row.addStretch()  # 右側に余白を追加
+        prompt_controls.addWidget(self.prompt_combo)
+        prompt_controls.addWidget(prompt_edit_button)
+        prompt_layout.addLayout(prompt_controls)
         
-        settings_layout.addLayout(first_row)
-        settings_layout.addLayout(second_row)
+        # すべての設定を水平に配置
+        settings_layout.addLayout(expression_layout)
+        settings_layout.addLayout(model_layout)
+        settings_layout.addLayout(prompt_layout)
+        settings_layout.addStretch()  # 右側に余白を追加
+        
         settings_group.setLayout(settings_layout)
         
-        # ボタンエリア
+        # ボタンエリア（コンパクト化）
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
         
         self.send_button = QPushButton("送信")
-        self.send_button.setMinimumHeight(40)
+        self.send_button.setMinimumHeight(32)  # 40から32に縮小
         self.send_button.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
@@ -555,7 +577,7 @@ class InputPanel(QWidget):
                 border: none;
                 border-radius: 6px;
                 font-weight: bold;
-                font-size: 14px;
+                font-size: 13px;  
             }
             QPushButton:hover {
                 background-color: #66BB6A;
@@ -570,8 +592,8 @@ class InputPanel(QWidget):
         """)
         self.send_button.clicked.connect(self.send_message_clicked)
         
-        self.clear_button = QPushButton("クリア")
-        self.clear_button.setMinimumHeight(40)
+        self.clear_button = QPushButton("履歴クリア")
+        self.clear_button.setMinimumHeight(32)
         self.clear_button.setStyleSheet("""
             QPushButton {
                 background-color: #2196F3;
@@ -579,7 +601,7 @@ class InputPanel(QWidget):
                 border: none;
                 border-radius: 6px;
                 font-weight: bold;
-                font-size: 14px;
+                font-size: 13px;
             }
             QPushButton:hover {
                 background-color: #42A5F5;
@@ -588,7 +610,7 @@ class InputPanel(QWidget):
                 background-color: #1976D2;
             }
         """)
-        self.clear_button.clicked.connect(self.clear_input)
+        self.clear_button.clicked.connect(self.clear_conversation)
         
         button_layout.addWidget(self.send_button)
         button_layout.addWidget(self.clear_button)
@@ -618,7 +640,28 @@ class InputPanel(QWidget):
                 elif modifiers == Qt.KeyboardModifier.ControlModifier:
                     self.send_message_clicked()
                     return True
+            # Escキーで入力クリア
+            elif event.key() == Qt.Key.Key_Escape:
+                self.clear_input()
+                return True
         return super().eventFilter(obj, event)
+    
+    def show_input_context_menu(self, position):
+        """入力欄の右クリックメニューを表示"""
+        menu = QMenu(self)
+        
+        # 標準のコンテキストメニューアクション
+        menu.addAction("切り取り", self.message_input.cut)
+        menu.addAction("コピー", self.message_input.copy)
+        menu.addAction("貼り付け", self.message_input.paste)
+        menu.addSeparator()
+        menu.addAction("すべて選択", self.message_input.selectAll)
+        menu.addSeparator()
+        menu.addAction("入力をクリア", self.clear_input)
+        
+        # メニューを表示
+        global_pos = self.message_input.mapToGlobal(position)
+        menu.exec(global_pos)
     
     def send_message_clicked(self):
         """送信ボタンクリック処理"""
@@ -628,11 +671,32 @@ class InputPanel(QWidget):
             model_setting = self.model_combo.currentText()
             prompt = self.prompt_combo.currentText()
             self.send_message.emit(message, expression, model_setting, prompt)
-            self.message_input.clear()
+            self.clear_input()  # 送信後に入力欄をクリア
     
     def clear_input(self):
         """入力クリア"""
         self.message_input.clear()
+    
+    def clear_conversation(self):
+        """会話履歴クリア（確認ダイアログ付き）"""
+        reply = QMessageBox.question(
+            self, 
+            "確認", 
+            "会話履歴をクリアしますか？\n（この操作は元に戻せません）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # 親ウィンドウの会話表示をクリア
+            main_window = self.parent().parent().parent()
+            if hasattr(main_window, 'conversation_display'):
+                main_window.conversation_display.clear_conversation()
+                main_window.conversation_display.add_system_message("会話履歴をクリアしました", "info")
+            
+            # コントローラーの会話履歴もクリア
+            if hasattr(main_window, 'controller') and main_window.controller:
+                main_window.controller.clear_conversation_history()
     
     def set_enabled(self, enabled: bool):
         """入力欄の有効/無効を設定"""
@@ -663,6 +727,8 @@ class StatusPanel(QWidget):
     
     def init_ui(self):
         layout = QHBoxLayout()
+        layout.setContentsMargins(10, 3, 10, 3)  # マージンを縮小
+        layout.setSpacing(8)  # 間隔を調整
         
         # ステータス表示
         self.status_label = QLabel("準備完了")
@@ -729,7 +795,7 @@ class SiriusFaceAnimUI(QMainWindow):
     def init_ui(self):
         """UIを初期化"""
         self.setWindowTitle("シリウス音声対話システム")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 800, 500)  # 600から500に縮小
         
         # メインウィジェット
         main_widget = QWidget()
@@ -741,20 +807,22 @@ class SiriusFaceAnimUI(QMainWindow):
         """)
         self.setCentralWidget(main_widget)
         
-        # メインレイアウト
+        # メインレイアウト（マージン調整）
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(5, 5, 5, 5)  # マージンを縮小
+        main_layout.setSpacing(5)  # 間隔を縮小
         
-        # ヘッダー
+        # ヘッダー（コンパクト化）
         header = QLabel("🤖 シリウス音声対話システム")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header.setStyleSheet("""
             QLabel {
-                font-size: 20px;
+                font-size: 16px;  
                 font-weight: bold;
                 color: #64B5F6;
-                padding: 15px;
+                padding: 8px;  
                 background-color: #1e1e1e;
-                border-bottom: 2px solid #424242;
+                border-bottom: 1px solid #424242;  
             }
         """)
         
@@ -769,9 +837,9 @@ class SiriusFaceAnimUI(QMainWindow):
         self.input_panel = InputPanel()
         splitter.addWidget(self.input_panel)
         
-        # スプリッター比率設定
-        splitter.setStretchFactor(0, 3)  # 会話表示部分を大きく
-        splitter.setStretchFactor(1, 1)  # 入力部分を小さく
+        # スプリッター比率設定（会話表示エリアを大きく保ちつつ、入力エリアをコンパクトに）
+        splitter.setStretchFactor(0, 4)  # 会話表示部分
+        splitter.setStretchFactor(1, 1)  # 入力部分をさらに小さく
         
         # ステータスパネル
         self.status_panel = StatusPanel()
@@ -785,7 +853,7 @@ class SiriusFaceAnimUI(QMainWindow):
         
         # 初期メッセージ
         self.conversation_display.add_system_message("シリウス音声対話システムが起動しました", "success")
-        self.conversation_display.add_system_message("メッセージを入力して「送信」ボタンを押すか、Cmd+Enter（macOS）またはCtrl+Enter（Windows/Linux）で送信できます", "info")
+        self.conversation_display.add_system_message("💡 使い方:\n• Cmd+Enter (macOS) / Ctrl+Enter (Windows) で送信\n• Escキーで入力欄をクリア\n• 「履歴クリア」ボタンで会話履歴をクリア", "info")
         
         # プロンプト一覧を初期化
         self.update_prompt_list()
