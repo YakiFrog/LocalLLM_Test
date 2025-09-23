@@ -464,6 +464,9 @@ class AdvancedInputPanel(QWidget):
             }
         """)
         
+        # Enterキーでの送信を設定
+        self.message_input.installEventFilter(self)
+        
         # 表情選択
         controls_layout = QHBoxLayout()
         
@@ -560,6 +563,26 @@ class AdvancedInputPanel(QWidget):
         layout.addLayout(button_layout)
         
         self.setLayout(layout)
+    
+    def eventFilter(self, obj, event):
+        """イベントフィルター（Enterキー処理）"""
+        if obj == self.message_input and event.type() == event.Type.KeyPress:
+            # 複数のキーボードショートカットに対応
+            if event.key() == Qt.Key.Key_Return:
+                modifiers = event.modifiers()
+                # Cmd+Shift+Enter (macOS)
+                if modifiers == (Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ShiftModifier):
+                    self.send_message_clicked()
+                    return True
+                # Cmd+Enter (macOS)
+                elif modifiers == Qt.KeyboardModifier.MetaModifier:
+                    self.send_message_clicked()
+                    return True
+                # Ctrl+Enter (Windows/Linux)
+                elif modifiers == Qt.KeyboardModifier.ControlModifier:
+                    self.send_message_clicked()
+                    return True
+        return super().eventFilter(obj, event)
     
     def send_message_clicked(self):
         """送信ボタンクリック処理"""
@@ -702,6 +725,7 @@ class AdvancedSiriusFaceAnimUI(QMainWindow):
         # 初期メッセージ
         self.conversation_display.add_system_message("シリウス音声対話システム（プロンプトチューニング統合版）が起動しました", "success")
         self.conversation_display.add_system_message("プロンプト設定を調整して会話の品質を向上させることができます", "info")
+        self.conversation_display.add_system_message("メッセージ送信: Cmd+Enter（macOS）またはCtrl+Enter（Windows/Linux）", "info")
     
     def init_connections(self):
         """シグナル・スロット接続を初期化"""

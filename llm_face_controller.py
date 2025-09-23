@@ -32,7 +32,8 @@ class LLMFaceController:
     def __init__(self, 
                  lm_studio_url="http://127.0.0.1:1234",
                  face_server_url="http://localhost:8080",
-                 voicevox_config=None):
+                 voicevox_config=None,
+                 config_file="prompt_configs.json"):
         """
         初期化
         
@@ -40,7 +41,11 @@ class LLMFaceController:
             lm_studio_url: LM StudioのURL
             face_server_url: シリウス表情サーバーのURL
             voicevox_config: VOICEVOX設定辞書
+            config_file: 設定ファイルのパス
         """
+        # 設定ファイル読み込み
+        self.config = self.load_config(config_file)
+        
         # LMStudioクライアント初期化
         self.llm_client = LMStudioClient(base_url=lm_studio_url)
         
@@ -85,11 +90,41 @@ class LLMFaceController:
         # システム設定
         self.conversation_history = []  # 会話履歴
         self.max_history_length = 10    # 最大履歴保持数
-        self.system_message = "あなたは親切で知的なAIアシスタント「シリウス」です。自然で親しみやすい日本語で答えてください。"
+        self.current_llm_setting = "mistral_default"  # デフォルトをMistralに変更
+        self.system_message = self.config.get("system_messages", {}).get("default", 
+            "あなたは親切で知的なAIアシスタント「シリウス」です。自然で親しみやすい日本語で答えてください。")
         
         # ステータス
         self.is_speaking = False
         self.is_initialized = True
+    
+    def load_config(self, config_file: str) -> Dict[str, Any]:
+        """設定ファイルを読み込み"""
+        try:
+            config_path = Path(config_file)
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                logger.info(f"設定ファイル読み込み完了: {config_file}")
+                return config
+            else:
+                logger.warning(f"設定ファイルが見つかりません: {config_file}")
+                return {}
+        except Exception as e:
+            logger.error(f"設定ファイル読み込みエラー: {e}")
+            return {}
+    
+    def set_llm_setting(self, setting_name: str):
+        """LLM設定を変更"""
+        if setting_name in self.config.get("llm_settings", {}):
+            self.current_llm_setting = setting_name
+            logger.info(f"LLM設定を変更: {setting_name}")
+        else:
+            logger.error(f"不明なLLM設定: {setting_name}")
+    
+    def get_available_llm_settings(self) -> list:
+        """利用可能なLLM設定一覧を取得"""
+        return list(self.config.get("llm_settings", {}).keys())
     
     def set_system_message(self, message: str):
         """システムメッセージを設定"""
@@ -112,6 +147,12 @@ class LLMFaceController:
             LLMの応答テキスト
         """
         try:
+            # 現在のLLM設定を取得
+            llm_setting = self.config.get("llm_settings", {}).get(self.current_llm_setting, {})
+            model = llm_setting.get("model", "mistralai/magistral-small-2509")
+            temperature = llm_setting.get("temperature", 0.7)
+            max_tokens = llm_setting.get("max_tokens", -1)
+            
             # 会話履歴を構築
             messages = [{"role": "system", "content": self.system_message}]
             
@@ -123,8 +164,13 @@ class LLMFaceController:
             # 現在のユーザーメッセージを追加
             messages.append({"role": "user", "content": user_message})
             
-            # LLMに送信
-            response = self.llm_client.chat_completion(messages)
+            # LLMに送信（設定ファイルのパラメータを使用）
+            response = self.llm_client.chat_completion(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
             
             if response and "choices" in response:
                 ai_response = response["choices"][0]["message"]["content"]
@@ -139,7 +185,7 @@ class LLMFaceController:
                 if len(self.conversation_history) > self.max_history_length:
                     self.conversation_history = self.conversation_history[-self.max_history_length:]
                 
-                logger.info(f"LLM応答取得成功: {ai_response[:50]}...")
+                logger.info(f"LLM応答取得成功 (モデル: {model}): {ai_response[:50]}...")
                 return ai_response
             else:
                 logger.error("LLMから有効な応答が得られませんでした")

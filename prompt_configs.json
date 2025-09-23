@@ -26,6 +26,26 @@
       "model": "openai/gpt-oss-20b",
       "temperature": 0.1,
       "max_tokens": 300
+    },
+    "mistral_default": {
+      "model": "mistralai/magistral-small-2509",
+      "temperature": 0.7,
+      "max_tokens": -1
+    },
+    "mistral_conservative": {
+      "model": "mistralai/magistral-small-2509",
+      "temperature": 0.3,
+      "max_tokens": 500
+    },
+    "mistral_creative": {
+      "model": "mistralai/magistral-small-2509",
+      "temperature": 0.9,
+      "max_tokens": 1000
+    },
+    "mistral_precise": {
+      "model": "mistralai/magistral-small-2509",
+      "temperature": 0.1,
+      "max_tokens": 300
     }
   },
   "test_scenarios": [

@@ -6,7 +6,7 @@ class LMStudioClient:
         self.base_url = base_url
         self.api_url = f"{base_url}/v1/chat/completions"
     
-    def chat_completion(self, messages, model="openai/gpt-oss-20b", temperature=0.7, max_tokens=-1, stream=False):
+    def chat_completion(self, messages, model="mistralai/magistral-small-2509", temperature=0.7, max_tokens=-1, stream=False):
         """
         LMStudioのAPIを使用してチャット補完を実行
         
@@ -97,7 +97,7 @@ def main():
     
     # 例3: インタラクティブな会話
     print("=== インタラクティブな会話 ===")
-    print("openai/gpt-oss-20bと会話を開始します。'quit'と入力して終了してください。")
+    print("mistralai/magistral-small-2509と会話を開始します。'quit'と入力して終了してください。")
     
     while True:
         user_input = input("\nあなた: ")

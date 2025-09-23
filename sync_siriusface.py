@@ -25,15 +25,22 @@ class ConversationWorker(QThread):
     """会話処理用ワーカースレッド"""
     conversation_finished = Signal(dict)
     
-    def __init__(self, controller: LLMFaceController, user_message: str, expression: str):
+    def __init__(self, controller: LLMFaceController, user_message: str, expression: str, model_setting: str):
         super().__init__()
         self.controller = controller
         self.user_message = user_message
         self.expression = expression
+        self.model_setting = model_setting
+        self._is_running = False
     
     def run(self):
         """ワーカースレッドの実行"""
+        self._is_running = True
         try:
+            # スレッドが中断されていないかチェック
+            if not self._is_running:
+                return
+                
             # asyncioイベントループを作成
             if sys.platform == 'win32':
                 asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -42,23 +49,56 @@ class ConversationWorker(QThread):
             asyncio.set_event_loop(loop)
             
             try:
+                # スレッドが中断されていないかチェック
+                if not self._is_running:
+                    return
+                
+                # LLMモデル設定を変更
+                self.controller.set_llm_setting(self.model_setting)
+                    
                 result = loop.run_until_complete(
                     self.controller.process_user_input(self.user_message, self.expression)
                 )
-                self.conversation_finished.emit(result)
+                
+                # スレッドが中断されていないかチェック
+                if self._is_running:
+                    self.conversation_finished.emit(result)
+                    
             finally:
-                loop.close()
+                try:
+                    # イベントループのクリーンアップ
+                    if loop.is_running():
+                        loop.stop()
+                    
+                    # 残っているタスクをキャンセル
+                    pending = asyncio.all_tasks(loop)
+                    for task in pending:
+                        task.cancel()
+                    
+                    # タスクの完了を待つ
+                    if pending:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                        
+                finally:
+                    loop.close()
                 
         except Exception as e:
-            error_result = {
-                "success": False,
-                "user_message": self.user_message,
-                "llm_response": None,
-                "voice_success": False,
-                "expression_success": False,
-                "error": f"会話処理エラー: {e}"
-            }
-            self.conversation_finished.emit(error_result)
+            if self._is_running:  # スレッドが有効な場合のみエラーを報告
+                error_result = {
+                    "success": False,
+                    "user_message": self.user_message,
+                    "llm_response": None,
+                    "voice_success": False,
+                    "expression_success": False,
+                    "error": f"会話処理エラー: {e}"
+                }
+                self.conversation_finished.emit(error_result)
+        finally:
+            self._is_running = False
+    
+    def stop_gracefully(self):
+        """スレッドの優雅な停止"""
+        self._is_running = False
 
 class ConversationDisplay(QWidget):
     """会話表示ウィジェット"""
@@ -130,7 +170,7 @@ class ConversationDisplay(QWidget):
 
 class InputPanel(QWidget):
     """入力パネルウィジェット"""
-    send_message = Signal(str, str)  # message, expression
+    send_message = Signal(str, str, str)  # message, expression, model_setting
     
     def __init__(self):
         super().__init__()
@@ -199,7 +239,10 @@ class InputPanel(QWidget):
                 color: #64B5F6;
             }
         """)
-        settings_layout = QHBoxLayout()
+        settings_layout = QVBoxLayout()
+        
+        # 第1行: 表情とLLMモデル
+        first_row = QHBoxLayout()
         
         # 表情選択
         expression_layout = QVBoxLayout()
@@ -241,7 +284,50 @@ class InputPanel(QWidget):
         """)
         expression_layout.addWidget(self.expression_combo)
         
-        settings_layout.addLayout(expression_layout)
+        # LLMモデル選択
+        model_layout = QVBoxLayout()
+        model_label = QLabel("LLMモデル:")
+        model_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+        model_layout.addWidget(model_label)
+        self.model_combo = QComboBox()
+        self.model_combo.addItems([
+            "mistral_default", "mistral_conservative", "mistral_creative", "mistral_precise",
+            "default", "conservative", "creative", "precise"
+        ])
+        self.model_combo.setCurrentText("mistral_default")
+        self.model_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px;
+                min-width: 120px;
+            }
+            QComboBox::drop-down {
+                border-left: 1px solid #555;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 4px solid #ffffff;
+                margin: 0 2px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                selection-background-color: #64B5F6;
+            }
+        """)
+        model_layout.addWidget(self.model_combo)
+        
+        first_row.addLayout(expression_layout)
+        first_row.addLayout(model_layout)
+        
+        settings_layout.addLayout(first_row)
         settings_group.setLayout(settings_layout)
         
         # ボタンエリア
@@ -304,9 +390,21 @@ class InputPanel(QWidget):
     def eventFilter(self, obj, event):
         """イベントフィルター（Enterキー処理）"""
         if obj == self.message_input and event.type() == event.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-                self.send_message_clicked()
-                return True
+            # 複数のキーボードショートカットに対応
+            if event.key() == Qt.Key.Key_Return:
+                modifiers = event.modifiers()
+                # Cmd+Shift+Enter (macOS)
+                if modifiers == (Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ShiftModifier):
+                    self.send_message_clicked()
+                    return True
+                # Cmd+Enter (macOS)
+                elif modifiers == Qt.KeyboardModifier.MetaModifier:
+                    self.send_message_clicked()
+                    return True
+                # Ctrl+Enter (Windows/Linux)
+                elif modifiers == Qt.KeyboardModifier.ControlModifier:
+                    self.send_message_clicked()
+                    return True
         return super().eventFilter(obj, event)
     
     def send_message_clicked(self):
@@ -314,7 +412,8 @@ class InputPanel(QWidget):
         message = self.message_input.toPlainText().strip()
         if message:
             expression = self.expression_combo.currentText()
-            self.send_message.emit(message, expression)
+            model_setting = self.model_combo.currentText()
+            self.send_message.emit(message, expression, model_setting)
             self.message_input.clear()
     
     def clear_input(self):
@@ -326,6 +425,7 @@ class InputPanel(QWidget):
         self.message_input.setEnabled(enabled)
         self.send_button.setEnabled(enabled)
         self.expression_combo.setEnabled(enabled)
+        self.model_combo.setEnabled(enabled)
 
 class StatusPanel(QWidget):
     """ステータスパネルウィジェット"""
@@ -458,21 +558,22 @@ class SiriusFaceAnimUI(QMainWindow):
         
         # 初期メッセージ
         self.conversation_display.add_system_message("シリウス音声対話システムが起動しました", "success")
-        self.conversation_display.add_system_message("メッセージを入力して「送信」ボタンを押すか、Ctrl+Enterで送信できます", "info")
+        self.conversation_display.add_system_message("メッセージを入力して「送信」ボタンを押すか、Cmd+Enter（macOS）またはCtrl+Enter（Windows/Linux）で送信できます", "info")
     
     def init_connections(self):
         """シグナル・スロット接続を初期化"""
         self.input_panel.send_message.connect(self.handle_user_message)
     
-    def handle_user_message(self, message: str, expression: str):
+    def handle_user_message(self, message: str, expression: str, model_setting: str):
         """ユーザーメッセージを処理"""
         # UI更新
         self.conversation_display.add_user_message(message)
+        self.conversation_display.add_system_message(f"モデル: {model_setting}", "info")
         self.input_panel.set_enabled(False)
         self.status_panel.set_status("処理中...", True)
         
         # ワーカースレッドで処理
-        self.conversation_worker = ConversationWorker(self.controller, message, expression)
+        self.conversation_worker = ConversationWorker(self.controller, message, expression, model_setting)
         self.conversation_worker.conversation_finished.connect(self.handle_conversation_result)
         self.conversation_worker.start()
     
@@ -506,30 +607,49 @@ class SiriusFaceAnimUI(QMainWindow):
         finally:
             # UI復元
             self.input_panel.set_enabled(True)
-            if self.conversation_worker:
-                self.conversation_worker.deleteLater()
-                self.conversation_worker = None
+            # ワーカースレッドのクリーンアップ
+            self.cleanup_worker_thread()
+    
+    def cleanup_worker_thread(self):
+        """ワーカースレッドのクリーンアップ"""
+        if self.conversation_worker:
+            # シグナル切断
+            try:
+                self.conversation_worker.conversation_finished.disconnect()
+            except:
+                pass
+            
+            # スレッドが実行中の場合は優雅に停止
+            if self.conversation_worker.isRunning():
+                self.conversation_worker.stop_gracefully()
+                # 少し待ってから強制終了
+                if not self.conversation_worker.wait(2000):  # 2秒待機
+                    self.conversation_worker.quit()
+                    self.conversation_worker.wait(1000)  # さらに1秒待機
+            
+            # オブジェクトを削除予約
+            self.conversation_worker.deleteLater()
+            self.conversation_worker = None
     
     def closeEvent(self, event):
         """ウィンドウクローズ時の処理"""
-        # ワーカースレッドが実行中の場合は停止を待つ
-        if self.conversation_worker and self.conversation_worker.isRunning():
-            self.conversation_worker.conversation_finished.disconnect()
-            self.conversation_worker.terminate()
-            self.conversation_worker.wait(3000)  # 3秒間待機
-            if self.conversation_worker.isRunning():
-                self.conversation_worker.quit()
-                self.conversation_worker.wait()
-        
-        # コントローラーのクリーンアップ
-        if self.controller:
-            try:
-                self.controller.stop_speaking()
-                self.controller.cleanup()
-            except Exception as e:
-                print(f"クリーンアップエラー: {e}")
-        
-        event.accept()
+        try:
+            # ワーカースレッドのクリーンアップ
+            self.cleanup_worker_thread()
+            
+            # コントローラーのクリーンアップ
+            if self.controller:
+                try:
+                    self.controller.stop_speaking()
+                    self.controller.cleanup()
+                except Exception as e:
+                    print(f"コントローラークリーンアップエラー: {e}")
+            
+            event.accept()
+            
+        except Exception as e:
+            print(f"ウィンドウクローズ時エラー: {e}")
+            event.accept()
 
 def main():
     """メイン関数"""
@@ -560,16 +680,35 @@ def main():
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
     app.setPalette(palette)
     
+    window = None
     try:
         # メインウィンドウ作成
         window = SiriusFaceAnimUI()
         window.show()
         
         # アプリケーション実行
-        sys.exit(app.exec())
+        result = app.exec()
+        
+        # 明示的なクリーンアップ
+        if window:
+            window.cleanup_worker_thread()
+            window = None
+        
+        # アプリケーション終了
+        app.quit()
+        sys.exit(result)
         
     except Exception as e:
         QMessageBox.critical(None, "重大なエラー", f"アプリケーション起動エラー: {e}")
+        
+        # エラー時のクリーンアップ
+        if window:
+            try:
+                window.cleanup_worker_thread()
+            except:
+                pass
+        
+        app.quit()
         sys.exit(1)
 
 if __name__ == "__main__":
