@@ -320,7 +320,7 @@ class LLMFaceController:
                     logger.info(f"クリーンテキスト: {clean_text}")
                     logger.info(f"表情セグメント数: {len(segments)}")
                     
-                    # 実際の音声合成を並行実行
+                    # クリーンテキストでリアルタイム表情制御を実行
                     success = await self.realtime_expression_controller.speak_with_dynamic_expressions(
                         text, "neutral"
                     )

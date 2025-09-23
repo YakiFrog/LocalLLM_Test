@@ -32,6 +32,11 @@ class ExpressionParser:
             'neutral', 'happy', 'sad', 'angry', 'surprised', 
             'crying', 'hurt', 'wink', 'mouth3', 'pien'
         }
+        
+        # 削除対象タグ（存在しない表情）
+        self.invalid_expressions = {
+            'thinking', 'excited', 'confused', 'sleepy'
+        }
     
     def parse_expression_text(self, text: str) -> List[ExpressionSegment]:
         """
@@ -43,10 +48,13 @@ class ExpressionParser:
         Returns:
             ExpressionSegmentのリスト
         """
+        # まず無効なタグを処理
+        processed_text = self._remove_invalid_tags(text)
+        
         segments = []
         current_pos = 0
         
-        for match in self.expression_pattern.finditer(text):
+        for match in self.expression_pattern.finditer(processed_text):
             expression = match.group(1).lower()
             content = match.group(2)
             start = match.start()
@@ -54,7 +62,7 @@ class ExpressionParser:
             
             # タグの前のテキスト（通常の表情）
             if start > current_pos:
-                before_text = text[current_pos:start]
+                before_text = processed_text[current_pos:start]
                 if before_text.strip():
                     segments.append(ExpressionSegment(
                         text=before_text,
@@ -63,7 +71,7 @@ class ExpressionParser:
                         end_pos=start
                     ))
             
-            # 表情タグ内のテキスト
+            # 表情タグ内のテキスト（有効なタグのみ）
             if expression in self.valid_expressions:
                 segments.append(ExpressionSegment(
                     text=content,
@@ -72,32 +80,57 @@ class ExpressionParser:
                     end_pos=end
                 ))
             else:
-                # 不正な表情タグは通常テキストとして扱う
-                segments.append(ExpressionSegment(
-                    text=match.group(0),
-                    expression='neutral',
-                    start_pos=start,
-                    end_pos=end
-                ))
+                # 無効な表情タグの内容をプレーンテキストとして追加
+                if content.strip():
+                    segments.append(ExpressionSegment(
+                        text=content,
+                        expression='neutral',
+                        start_pos=start,
+                        end_pos=end
+                    ))
             
             current_pos = end
         
         # 残りのテキスト
-        if current_pos < len(text):
-            remaining_text = text[current_pos:]
+        if current_pos < len(processed_text):
+            remaining_text = processed_text[current_pos:]
             if remaining_text.strip():
                 segments.append(ExpressionSegment(
                     text=remaining_text,
                     expression='neutral',
                     start_pos=current_pos,
-                    end_pos=len(text)
+                    end_pos=len(processed_text)
                 ))
         
         return segments
     
     def remove_expression_tags(self, text: str) -> str:
         """表情タグを除去してプレーンテキストを取得"""
-        return self.expression_pattern.sub(r'\2', text)
+        # まず無効なタグを削除
+        cleaned_text = self._remove_invalid_tags(text)
+        # 正しいタグのコンテンツのみを残す
+        return self.expression_pattern.sub(r'\2', cleaned_text)
+    
+    def _remove_invalid_tags(self, text: str) -> str:
+        """無効な表情タグを除去"""
+        result = text
+        
+        # 無効な表情タグを削除してコンテンツのみを残す
+        for invalid_expr in self.invalid_expressions:
+            # <thinking>...</thinking> 形式を削除
+            invalid_pattern = re.compile(f'<{invalid_expr}>(.*?)</{invalid_expr}>', re.DOTALL)
+            result = invalid_pattern.sub(r'\1', result)
+            # <thinking>...<thinking> 形式も削除
+            malformed_pattern = re.compile(f'<{invalid_expr}>(.*?)<{invalid_expr}>', re.DOTALL)
+            result = malformed_pattern.sub(r'\1', result)
+        
+        # ネストしたタグの問題を解決
+        # <happy><excited>text</happy> のようなケースで、<excited>を除去
+        for invalid_expr in self.invalid_expressions:
+            # 開始タグのみを削除
+            result = re.sub(f'<{invalid_expr}>', '', result)
+        
+        return result
 
 class RealTimeExpressionController:
     """リアルタイム表情制御クラス"""
@@ -301,6 +334,7 @@ async def test_realtime_controller():
     test_text = "<happy>こんにちは！</happy>今日は<excited>とても良い天気</excited>ですね。でも明日は<sad>雨</sad>の予報です。<thinking>傘を持って行った方が良いでしょう</thinking>。"
     
     print(f"\nテスト実行: {test_text}")
+    print("期待される結果: excitedとthinkingタグが削除され、コンテンツのみが残る")
     await controller.speak_with_dynamic_expressions(test_text, "neutral")
 
 if __name__ == "__main__":

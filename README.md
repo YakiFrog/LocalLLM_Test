@@ -146,6 +146,58 @@ graph TB
 
 ## 🎭 表情システム
 
+### 表情制御フロー
+
+```mermaid
+sequenceDiagram
+    participant User as ユーザー
+    participant UI as UI (sync_siriusface.py)
+    participant Controller as LLMコントローラー
+    participant LLM as LM Studio
+    participant Parser as 表情解析
+    participant Voice as VOICEVOX
+    participant Face as 表情サーバー
+    participant Hardware as シリウス
+
+    User->>UI: メッセージ入力
+    UI->>Controller: 音声対話リクエスト
+    Controller->>LLM: プロンプト + ユーザーメッセージ
+    LLM-->>Controller: 表情タグ付き応答<br/>"<happy>こんにちは</happy>"
+    
+    par 並列処理
+        Controller->>Parser: 表情タグ解析
+        Parser->>Face: 表情切り替え指示
+        Face->>Hardware: 表情変更
+    and
+        Controller->>Voice: 音声合成リクエスト
+        Voice-->>Controller: 音韻データ + 音声
+        Controller->>Hardware: 音声再生 + リップシンク
+    end
+    
+    Controller-->>UI: 処理完了通知
+    UI-->>User: 応答表示
+```
+
+### 表情モード一覧
+
+```mermaid
+mindmap
+  root((シリウス表情))
+    基本表情
+      neutral[普通・中立的]
+      happy[幸せ・喜び・明るい]
+      sad[悲しみ・残念・落胆]
+      angry[怒り・不満・イライラ]
+    感情表現
+      surprised[驚き・意外・びっくり]
+      crying[泣く・とても悲しい]
+      hurt[痛み・困った・辛い]
+    特殊表情
+      wink[茶目っ気・いたずら・可愛い]
+      mouth3[特別な口の形・特殊な発音]
+      pien[困った・可愛く甘える]
+```
+
 ### 表情タグ仕様
 
 表情タグは `<表情名>テキスト</表情名>` の形式で使用します。
@@ -170,6 +222,56 @@ graph TB
 - 文字数ベースの時間推定（1文字約150ms）
 
 ## 🚀 インストール
+
+### システム要件
+
+```mermaid
+graph TB
+    subgraph "開発環境"
+        Python[Python 3.13+]
+        Node[Node.js]
+        LM[LM Studio]
+        OS[macOS<br/>テスト済み]
+    end
+    
+    subgraph "Pythonパッケージ"
+        PySide[PySide6]
+        Requests[requests]
+        NumPy[numpy]
+        QAsync[qasync]
+        VoiceVOX[voicevox_core]
+    end
+    
+    subgraph "外部依存"
+        ONNX[ONNX Runtime]
+        OpenJTalk[Open JTalk Dict]
+        Model[VOICEVOX Model]
+    end
+    
+    Python --> PySide
+    Python --> Requests
+    Python --> NumPy
+    Python --> QAsync
+    Python --> VoiceVOX
+    
+    VoiceVOX --> ONNX
+    VoiceVOX --> OpenJTalk
+    VoiceVOX --> Model
+```
+
+### インストールフロー
+
+```mermaid
+flowchart TD
+    A[リポジトリクローン] --> B[LocalLLM_Test環境構築]
+    B --> C[仮想環境作成]
+    C --> D[依存パッケージインストール]
+    D --> E[sirius_face_anim環境構築]
+    E --> F[VOICEVOX設定]
+    F --> G[LM Studio設定]
+    G --> H[動作確認]
+    H --> I[システム起動]
+```
 
 ### 前提条件
 - Python 3.13+
@@ -315,6 +417,32 @@ voicevox_config = {
 
 ## 📡 API仕様
 
+### システム間通信
+
+```mermaid
+graph LR
+    subgraph "フロントエンド"
+        A[PySide6 UI]
+    end
+    
+    subgraph "バックエンドAPI"
+        B[LLMコントローラー]
+        C[表情サーバー:8080]
+        D[LM Studio:1234]
+        E[VOICEVOX Core]
+    end
+    
+    A -->|HTTP POST| B
+    B -->|HTTP POST| C
+    B -->|HTTP POST| D
+    B -->|Library Call| E
+    
+    C -->|JSON Response| B
+    D -->|JSON Response| B
+    E -->|Audio + Phoneme| B
+    B -->|Result| A
+```
+
 ### 表情制御API
 
 #### 表情設定
@@ -363,6 +491,31 @@ Response:
     "blink_interval": 3.0
   }
 }
+```
+
+### データフロー
+
+```mermaid
+flowchart TD
+    A[ユーザー入力] --> B{表情タグ<br/>含有?}
+    B -->|Yes| C[タグ解析]
+    B -->|No| D[デフォルト表情]
+    
+    C --> E[タグ検証]
+    E --> F{正しい<br/>タグ?}
+    F -->|Yes| G[表情セグメント作成]
+    F -->|No| H[自動修正]
+    H --> G
+    
+    D --> I[LLM処理]
+    G --> I
+    I --> J[音声合成]
+    I --> K[表情制御]
+    
+    J --> L[リップシンク]
+    K --> M[表情切り替え]
+    L --> N[ハードウェア出力]
+    M --> N
 ```
 
 ### LLM統合API
@@ -447,43 +600,154 @@ logging.basicConfig(level=logging.DEBUG)
 
 ## 📁 ファイル構成
 
+### プロジェクト構造
+
+```mermaid
+graph TB
+    subgraph "LocalLLM_Test/"
+        A[README.md]
+        B[launch_sirius_system.py]
+        C[sync_siriusface.py]
+        D[llm_face_controller.py]
+        E[expression_parser.py]
+        F[main.py]
+        
+        subgraph "prompts/"
+            G[sirius_expressions.txt]
+            H[emotional.txt]
+            I[casual.txt]
+            J[technical.txt]
+        end
+        
+        subgraph "bin/"
+            K[python仮想環境]
+        end
+    end
+    
+    subgraph "sirius_face_anim/"
+        L[package.json]
+        M[electron-builder.yml]
+        
+        subgraph "python/"
+            N[main.py]
+            O[voicevox_lipsync.py]
+            P[audioquery_phoneme.py]
+        end
+        
+        subgraph "renderer/"
+            Q[Next.js UI]
+        end
+    end
+    
+    B --> C
+    B --> N
+    C --> D
+    D --> E
+    D --> F
+    E --> N
+    F --> N
 ```
-LocalLLM_Test/
-├── README.md                       # このファイル
-├── launch_sirius_system.py         # 統合起動スクリプト  
-├── start_sirius_system.sh          # シェル起動スクリプト
-├── sync_siriusface.py              # メイン音声対話UI
-├── llm_face_controller.py          # LLM統合制御
-├── expression_parser.py            # 表情解析・制御
-├── expression_validator.py         # 表情タグ検証
-├── phoneme_expression_sync.py      # 音韻ベース同期
-├── main.py                         # LM Studioクライアント
-├── prompt_configs.json             # LLM設定ファイル
-├── test_sirius_expressions.py      # 表情システムテスト
-├── test_expression_system.py       # 表情解析テスト
-├── prompts/                        # プロンプト管理
-│   ├── sirius_expressions.txt      # シリウス表情専用
-│   ├── emotional.txt               # 基本感情表現
-│   ├── casual.txt                  # カジュアル会話
-│   ├── technical.txt               # 技術対話
-│   └── ...                         # その他プロンプト
-└── bin/                            # Python仮想環境
+
+### 主要ファイルの役割
+
+```mermaid
+classDiagram
+    class LaunchSystem {
+        +start_main_server()
+        +start_ui()
+        +monitor_processes()
+    }
+    
+    class SyncSiriusFace {
+        +UI表示
+        +ユーザー入力処理
+        +会話履歴管理
+    }
+    
+    class LLMFaceController {
+        +LLM統合制御
+        +音声合成制御
+        +表情制御統合
+    }
+    
+    class ExpressionParser {
+        +表情タグ解析
+        +リアルタイム制御
+        +タイミング同期
+    }
+    
+    class ExpressionServer {
+        +HTTP API提供
+        +表情制御
+        +ハードウェア制御
+    }
+    
+    LaunchSystem --> SyncSiriusFace
+    LaunchSystem --> ExpressionServer
+    SyncSiriusFace --> LLMFaceController
+    LLMFaceController --> ExpressionParser
+    ExpressionParser --> ExpressionServer
 ```
 
 ## 🔮 今後の開発予定
 
-### 短期的な改善
-- [ ] 音韻ベース精密同期の実装
-- [ ] 表情遷移アニメーションの追加
-- [ ] 音声感情認識の統合
-- [ ] エラーハンドリングの強化
+### 開発ロードマップ
 
-### 中長期的な機能拡張
-- [ ] 複数話者対応
-- [ ] リアルタイム感情分析
-- [ ] カスタム表情の追加
-- [ ] 多言語対応（英語等）
-- [ ] Web API化
+```mermaid
+timeline
+    title シリウス音声対話システム開発計画
+    
+    section フェーズ1 : 基盤機能
+        現在 : リアルタイム表情制御 : 音韻ベースリップシンク : LLM統合システム
+        
+    section フェーズ2 : 短期改善
+        2025Q1 : 音韻ベース精密同期 : 表情遷移アニメーション : エラーハンドリング強化
+        
+    section フェーズ3 : 機能拡張  
+        2025Q2 : 音声感情認識統合 : カスタム表情追加 : パフォーマンス最適化
+        
+    section フェーズ4 : 高度機能
+        2025Q3 : 複数話者対応 : リアルタイム感情分析 : 多言語対応
+        
+    section フェーズ5 : 統合・展開
+        2025Q4 : Web API化 : クラウド統合 : 商用化準備
+```
+
+### 技術スタック進化
+
+```mermaid
+graph TB
+    subgraph "現在の技術スタック"
+        A1[Python 3.13]
+        A2[PySide6]
+        A3[VOICEVOX Core]
+        A4[LM Studio]
+    end
+    
+    subgraph "短期的改善"
+        B1[音韻解析強化]
+        B2[アニメーション追加]
+        B3[エラー処理改善]
+        B4[パフォーマンス最適化]
+    end
+    
+    subgraph "中長期的拡張"
+        C1[音声感情認識]
+        C2[多言語対応]
+        C3[Web API]
+        C4[クラウド統合]
+    end
+    
+    A1 --> B1
+    A2 --> B2
+    A3 --> B3
+    A4 --> B4
+    
+    B1 --> C1
+    B2 --> C2
+    B3 --> C3
+    B4 --> C4
+```
 
 ## 📄 ライセンス
 

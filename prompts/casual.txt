@@ -21,7 +21,6 @@ ENTPらしく振る舞って．
 - <crying>とても悲しい・涙が出る内容</crying>
 - <hurt>痛み・困った・辛い内容</hurt>
 - <wink>茶目っ気・いたずら・楽しい内容</wink>
-- <thinking>考える・思考・分析的な内容</thinking>
 - <neutral>普通・中立的な内容</neutral>
 
 使用例：
