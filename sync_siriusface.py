@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QLineEdit, QComboBox, 
     QProgressBar, QScrollArea, QFrame, QSplitter, QGroupBox,
-    QCheckBox, QSpinBox, QSlider, QMessageBox, QDialog, QDialogButtonBox, QMenu
+    QCheckBox, QSpinBox, QSlider, QMessageBox, QDialog, QDialogButtonBox, QMenu,
+    QTabWidget
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QThread
 from PySide6.QtGui import QFont, QIcon, QPalette, QColor
@@ -38,7 +39,7 @@ class VoiceRecorder(QThread):
     transcription_ready = Signal(str)
     error_occurred = Signal(str)
     
-    def __init__(self, model_name="medium"):
+    def __init__(self, model_name="medium", device_index=None):
         super().__init__()
         self.is_recording = False
         self.audio_data = []
@@ -48,6 +49,7 @@ class VoiceRecorder(QThread):
         self.channels = 1               # モノラル録音
         self.format = pyaudio.paInt16   # 16bit PCM
         self.record_seconds_min = 1.0   # 最小録音時間（秒）
+        self.device_index = device_index  # マイクデバイスインデックス
         
         # Whisperモデル（選択されたモデルを使用）
         self.load_whisper_model(model_name)
@@ -65,6 +67,27 @@ class VoiceRecorder(QThread):
         except Exception as e:
             print(f"❌ Whisper {model_name}モデル読み込み失敗: {e}")
             self.whisper_model = None
+    
+    @staticmethod
+    def get_audio_devices():
+        """利用可能な音声入力デバイスを取得"""
+        devices = []
+        try:
+            p = pyaudio.PyAudio()
+            for i in range(p.get_device_count()):
+                info = p.get_device_info_by_index(i)
+                # 入力チャンネルがあるデバイスのみを追加
+                if info['maxInputChannels'] > 0:
+                    devices.append({
+                        'index': i,
+                        'name': info['name'],
+                        'channels': info['maxInputChannels'],
+                        'sample_rate': int(info['defaultSampleRate'])
+                    })
+            p.terminate()
+        except Exception as e:
+            print(f"❌ 音声デバイス取得エラー: {e}")
+        return devices
     
     def start_recording(self):
         """録音開始"""
@@ -89,6 +112,7 @@ class VoiceRecorder(QThread):
                 channels=self.channels,
                 rate=self.sample_rate,
                 input=True,
+                input_device_index=self.device_index,  # マイクデバイスを指定
                 frames_per_buffer=self.chunk_size
             )
             
@@ -201,6 +225,7 @@ class VoiceRecorder(QThread):
 class ConversationWorker(QThread):
     """会話処理用ワーカースレッド"""
     conversation_finished = Signal(dict)
+    progress_update = Signal(str)  # 進行状況更新用シグナル
     
     def __init__(self, controller: LLMFaceController, user_message: str, expression: str, model_setting: str, prompt: str):
         super().__init__()
@@ -210,6 +235,7 @@ class ConversationWorker(QThread):
         self.model_setting = model_setting
         self.prompt = prompt
         self._is_running = False
+        self.timeout_timer = None
     
     def run(self):
         """ワーカースレッドの実行"""
@@ -219,6 +245,8 @@ class ConversationWorker(QThread):
             if not self._is_running:
                 return
                 
+            self.progress_update.emit("LLM応答を生成中...")
+            
             # asyncioイベントループを作成
             if sys.platform == 'win32':
                 asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -232,17 +260,37 @@ class ConversationWorker(QThread):
                     return
                 
                 # LLMモデル設定を変更
+                self.progress_update.emit("LLMモデル設定を変更中...")
                 self.controller.set_llm_setting(self.model_setting)
                 
                 # プロンプト設定を変更
+                self.progress_update.emit("プロンプト設定を変更中...")
                 self.controller.set_prompt(self.prompt)
-                    
-                result = loop.run_until_complete(
-                    self.controller.process_user_input(self.user_message, self.expression)
-                )
+                
+                # タイムアウト設定（60秒）
+                self.progress_update.emit("LLM応答処理中...")
+                
+                try:
+                    result = loop.run_until_complete(
+                        asyncio.wait_for(
+                            self.controller.process_user_input(self.user_message, self.expression),
+                            timeout=60.0
+                        )
+                    )
+                except asyncio.TimeoutError:
+                    self.progress_update.emit("タイムアウトエラー - 処理を中断中...")
+                    result = {
+                        "success": False,
+                        "user_message": self.user_message,
+                        "llm_response": None,
+                        "voice_success": False,
+                        "expression_success": False,
+                        "error": "処理がタイムアウトしました（60秒）。音声合成または表情制御に問題がある可能性があります。"
+                    }
                 
                 # スレッドが中断されていないかチェック
                 if self._is_running:
+                    self.progress_update.emit("処理完了")
                     self.conversation_finished.emit(result)
                     
             finally:
@@ -424,6 +472,122 @@ class PromptEditDialog(QDialog):
             QMessageBox.information(self, "成功", f"プロンプト '{name}' を適用しました")
             self.accept()
 
+class LogDisplay(QWidget):
+    """ログ表示ウィジェット"""
+    
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(3)
+        
+        # ツールバー
+        toolbar_layout = QHBoxLayout()
+        
+        self.clear_log_button = QPushButton("ログクリア")
+        self.clear_log_button.setMaximumHeight(30)
+        self.clear_log_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5722;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background-color: #FF7043;
+            }
+        """)
+        self.clear_log_button.clicked.connect(self.clear_logs)
+        
+        self.auto_scroll_checkbox = QCheckBox("自動スクロール")
+        self.auto_scroll_checkbox.setChecked(True)
+        self.auto_scroll_checkbox.setStyleSheet("""
+            QCheckBox {
+                color: #ffffff;
+                font-size: 11px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QCheckBox::indicator:unchecked {
+                background-color: #2b2b2b;
+                border: 1px solid #555;
+                border-radius: 3px;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4CAF50;
+                border: 1px solid #4CAF50;
+                border-radius: 3px;
+            }
+        """)
+        
+        toolbar_layout.addWidget(self.clear_log_button)
+        toolbar_layout.addWidget(self.auto_scroll_checkbox)
+        toolbar_layout.addStretch()
+        
+        # ログ表示エリア
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True)
+        self.log_area.setMinimumHeight(200)
+        
+        # フォント設定
+        font = QFont("SF Mono", 9)
+        if not font.exactMatch():
+            font = QFont("Menlo", 9)
+            if not font.exactMatch():
+                font = QFont("Monaco", 9)
+        self.log_area.setFont(font)
+        
+        # スタイル設定
+        self.log_area.setStyleSheet("""
+            QTextEdit {
+                background-color: #1a1a1a;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        
+        layout.addLayout(toolbar_layout)
+        layout.addWidget(self.log_area)
+        self.setLayout(layout)
+    
+    def add_log(self, message: str, log_type: str = "info"):
+        """ログメッセージを追加"""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        
+        colors = {
+            "info": "#ffffff",
+            "success": "#4CAF50", 
+            "warning": "#FF9800",
+            "error": "#F44336",
+            "debug": "#9E9E9E"
+        }
+        color = colors.get(log_type, "#ffffff")
+        
+        log_entry = f"<span style='color: #666666;'>[{timestamp}]</span> <span style='color: {color};'>{message}</span>"
+        self.log_area.append(log_entry)
+        
+        # 自動スクロール
+        if self.auto_scroll_checkbox.isChecked():
+            self.log_area.verticalScrollBar().setValue(
+                self.log_area.verticalScrollBar().maximum()
+            )
+    
+    def clear_logs(self):
+        """ログをクリア"""
+        self.log_area.clear()
+        self.add_log("ログがクリアされました", "info")
+
 class ConversationDisplay(QWidget):
     """会話表示ウィジェット"""
     
@@ -504,11 +668,15 @@ class InputPanel(QWidget):
         super().__init__()
         # 音声録音関連
         self.current_whisper_model = "medium"  # デフォルトモデル
-        self.voice_recorder = VoiceRecorder(self.current_whisper_model)
+        self.current_device_index = None  # デフォルトマイク
+        self.voice_recorder = VoiceRecorder(self.current_whisper_model, self.current_device_index)
         self.voice_recorder.recording_started.connect(self.on_recording_started)
         self.voice_recorder.recording_stopped.connect(self.on_recording_stopped)
         self.voice_recorder.transcription_ready.connect(self.on_transcription_ready)
         self.voice_recorder.error_occurred.connect(self.on_voice_error)
+        
+        # 利用可能な音声デバイスを取得
+        self.audio_devices = VoiceRecorder.get_audio_devices()
         
         self.init_ui()
     
@@ -673,6 +841,58 @@ class InputPanel(QWidget):
         self.whisper_combo.currentTextChanged.connect(self.change_whisper_model)
         whisper_layout.addWidget(self.whisper_combo)
         
+        # マイク選択（コンパクト）
+        mic_layout = QVBoxLayout()
+        mic_layout.setSpacing(2)
+        mic_label = QLabel("マイク:")
+        mic_label.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 12px;")
+        mic_layout.addWidget(mic_label)
+        self.mic_combo = QComboBox()
+        
+        # デフォルトマイクを追加
+        self.mic_combo.addItem("デフォルト", None)
+        
+        # 利用可能なマイクデバイスを追加
+        for device in self.audio_devices:
+            device_name = device['name']
+            # 名前が長い場合は短縮
+            if len(device_name) > 20:
+                device_name = device_name[:17] + "..."
+            self.mic_combo.addItem(device_name, device['index'])
+        
+        self.mic_combo.setCurrentIndex(0)  # デフォルトを選択
+        self.mic_combo.setMaximumHeight(28)
+        self.mic_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 2px 4px;
+                min-width: 100px;
+                font-size: 11px;
+            }
+            QComboBox::drop-down {
+                border-left: 1px solid #555;
+                width: 16px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 3px solid transparent;
+                border-right: 3px solid transparent;
+                border-top: 3px solid #ffffff;
+                margin: 0 2px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                selection-background-color: #64B5F6;
+            }
+        """)
+        self.mic_combo.currentIndexChanged.connect(self.change_microphone)
+        mic_layout.addWidget(self.mic_combo)
+        
         # LLMモデル選択（コンパクト）
         model_layout = QVBoxLayout()
         model_layout.setSpacing(2)
@@ -789,6 +1009,7 @@ class InputPanel(QWidget):
         # すべての設定を水平に配置
         settings_layout.addLayout(expression_layout)
         settings_layout.addLayout(whisper_layout)
+        settings_layout.addLayout(mic_layout)
         settings_layout.addLayout(model_layout)
         settings_layout.addLayout(prompt_layout)
         settings_layout.addStretch()  # 右側に余白を追加
@@ -962,6 +1183,7 @@ class InputPanel(QWidget):
         self.voice_button.setEnabled(enabled)
         self.expression_combo.setEnabled(enabled)
         self.whisper_combo.setEnabled(enabled)
+        self.mic_combo.setEnabled(enabled)
         self.model_combo.setEnabled(enabled)
         self.prompt_combo.setEnabled(enabled)
     
@@ -991,7 +1213,7 @@ class InputPanel(QWidget):
             old_recorder = self.voice_recorder
             
             # 新しいレコーダーを作成
-            self.voice_recorder = VoiceRecorder(new_model)
+            self.voice_recorder = VoiceRecorder(new_model, self.current_device_index)
             self.voice_recorder.recording_started.connect(self.on_recording_started)
             self.voice_recorder.recording_stopped.connect(self.on_recording_stopped)
             self.voice_recorder.transcription_ready.connect(self.on_transcription_ready)
@@ -1006,6 +1228,41 @@ class InputPanel(QWidget):
             main_window = self.parent().parent().parent()
             if hasattr(main_window, 'conversation_display'):
                 main_window.conversation_display.add_system_message(f"Whisperモデルを {new_model} に変更しました", "info")
+                main_window.add_log(f"Whisperモデル変更: {self.current_whisper_model} → {new_model}", "info")
+    
+    def change_microphone(self):
+        """マイクデバイスを変更"""
+        selected_index = self.mic_combo.currentIndex()
+        new_device_index = self.mic_combo.itemData(selected_index)
+        
+        if new_device_index != self.current_device_index:
+            # 現在の録音が実行中なら停止
+            if self.voice_recorder.is_recording:
+                self.voice_recorder.stop_recording()
+                self.voice_recorder.wait(2000)  # 停止を待つ
+            
+            # 新しいデバイスでVoiceRecorderを再作成
+            self.current_device_index = new_device_index
+            old_recorder = self.voice_recorder
+            
+            # 新しいレコーダーを作成
+            self.voice_recorder = VoiceRecorder(self.current_whisper_model, new_device_index)
+            self.voice_recorder.recording_started.connect(self.on_recording_started)
+            self.voice_recorder.recording_stopped.connect(self.on_recording_stopped)
+            self.voice_recorder.transcription_ready.connect(self.on_transcription_ready)
+            self.voice_recorder.error_occurred.connect(self.on_voice_error)
+            
+            # 古いレコーダーをクリーンアップ
+            if old_recorder.isRunning():
+                old_recorder.quit()
+                old_recorder.wait(1000)
+            
+            # 親ウィンドウの会話表示にメッセージを追加
+            main_window = self.parent().parent().parent()
+            if hasattr(main_window, 'conversation_display'):
+                device_name = self.mic_combo.currentText()
+                main_window.conversation_display.add_system_message(f"マイクデバイスを {device_name} に変更しました", "info")
+                main_window.add_log(f"マイクデバイス変更: {device_name} (インデックス: {new_device_index})", "info")
     
     def toggle_voice_recording(self):
         """音声録音の開始/停止を切り替え"""
@@ -1043,6 +1300,7 @@ class InputPanel(QWidget):
         main_window = self.parent().parent().parent()
         if hasattr(main_window, 'conversation_display'):
             main_window.conversation_display.add_system_message("🎤 音声録音中... 話してください", "info")
+            main_window.add_log("音声録音開始", "info")
     
     def on_recording_stopped(self):
         """録音停止時の処理"""
@@ -1068,6 +1326,7 @@ class InputPanel(QWidget):
         main_window = self.parent().parent().parent()
         if hasattr(main_window, 'conversation_display'):
             main_window.conversation_display.add_system_message("🔄 音声を認識中...", "warning")
+            main_window.add_log("音声録音停止 - 認識処理開始", "info")
     
     def on_transcription_ready(self, text: str):
         """音声認識完了時の処理"""
@@ -1078,6 +1337,7 @@ class InputPanel(QWidget):
         main_window = self.parent().parent().parent()
         if hasattr(main_window, 'conversation_display'):
             main_window.conversation_display.add_system_message(f"✅ 音声認識完了: {text}", "success")
+            main_window.add_log(f"音声認識成功: {text}", "success")
     
     def on_voice_error(self, error_message: str):
         """音声エラー時の処理"""
@@ -1085,6 +1345,7 @@ class InputPanel(QWidget):
         main_window = self.parent().parent().parent()
         if hasattr(main_window, 'conversation_display'):
             main_window.conversation_display.add_system_message(f"❌ {error_message}", "error")
+            main_window.add_log(f"音声エラー: {error_message}", "error")
         
         # ボタンを元の状態に戻す
         self.voice_button.setText("🎤 音声入力開始")
@@ -1216,9 +1477,45 @@ class SiriusFaceAnimUI(QMainWindow):
         # スプリッター（上下分割）
         splitter = QSplitter(Qt.Orientation.Vertical)
         
-        # 会話表示部分
+        # タブウィジェット作成
+        tab_widget = QTabWidget()
+        tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #555;
+                background-color: #1e1e1e;
+            }
+            QTabWidget::tab-bar {
+                alignment: left;
+            }
+            QTabBar::tab {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-bottom: none;
+                padding: 8px 16px;
+                margin-right: 2px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                min-width: 80px;
+            }
+            QTabBar::tab:selected {
+                background-color: #4CAF50;
+                color: #ffffff;
+            }
+            QTabBar::tab:hover {
+                background-color: #424242;
+            }
+        """)
+        
+        # 会話表示タブ
         self.conversation_display = ConversationDisplay()
-        splitter.addWidget(self.conversation_display)
+        tab_widget.addTab(self.conversation_display, "💬 会話")
+        
+        # ログ表示タブ
+        self.log_display = LogDisplay()
+        tab_widget.addTab(self.log_display, "📋 ログ")
+        
+        splitter.addWidget(tab_widget)
         
         # 入力部分
         self.input_panel = InputPanel()
@@ -1240,7 +1537,11 @@ class SiriusFaceAnimUI(QMainWindow):
         
         # 初期メッセージ
         self.conversation_display.add_system_message("シリウス音声対話システムが起動しました", "success")
-        self.conversation_display.add_system_message("💡 使い方:\n• Cmd+Enter (macOS) / Ctrl+Enter (Windows) で送信\n• Escキーで入力欄をクリア\n• 「履歴クリア」ボタンで会話履歴をクリア", "info")
+        self.conversation_display.add_system_message("💡 使い方:\n• Cmd+Enter (macOS) / Ctrl+Enter (Windows) で送信\n• Escキーで入力欄をクリア\n• 「履歴クリア」ボタンで会話履歴をクリア\n• ログタブで詳細な処理状況を確認", "info")
+        
+        # 初期ログ
+        self.add_log("シリウス音声対話システム起動完了", "success")
+        self.add_log("LLMFaceController初期化完了", "info")
         
         # プロンプト一覧を初期化
         self.update_prompt_list()
@@ -1264,8 +1565,17 @@ class SiriusFaceAnimUI(QMainWindow):
         """シグナル・スロット接続を初期化"""
         self.input_panel.send_message.connect(self.handle_user_message)
     
+    def add_log(self, message: str, log_type: str = "info"):
+        """ログメッセージを追加"""
+        if hasattr(self, 'log_display'):
+            self.log_display.add_log(message, log_type)
+    
     def handle_user_message(self, message: str, expression: str, model_setting: str, prompt: str):
         """ユーザーメッセージを処理"""
+        # ログ追加
+        self.add_log(f"ユーザー入力: {message}", "info")
+        self.add_log(f"設定 - 表情: {expression}, モデル: {model_setting}, プロンプト: {prompt}", "debug")
+        
         # UI更新
         self.conversation_display.add_user_message(message)
         self.conversation_display.add_system_message(f"モデル: {model_setting} | プロンプト: {prompt}", "info")
@@ -1275,7 +1585,15 @@ class SiriusFaceAnimUI(QMainWindow):
         # ワーカースレッドで処理
         self.conversation_worker = ConversationWorker(self.controller, message, expression, model_setting, prompt)
         self.conversation_worker.conversation_finished.connect(self.handle_conversation_result)
+        self.conversation_worker.progress_update.connect(self.handle_progress_update)
         self.conversation_worker.start()
+        
+        self.add_log("会話処理ワーカースレッドを開始", "info")
+    
+    def handle_progress_update(self, message: str):
+        """進行状況更新を処理"""
+        self.status_panel.set_status(message, True)
+        self.add_log(f"進行状況: {message}", "debug")
     
     def handle_conversation_result(self, result: Dict[str, Any]):
         """会話処理結果を処理"""
@@ -1284,12 +1602,26 @@ class SiriusFaceAnimUI(QMainWindow):
                 # 成功時の処理
                 llm_response = result.get("llm_response", "")
                 self.conversation_display.add_ai_message(llm_response)
+                self.add_log(f"LLM応答: {llm_response}", "success")
+                
+                # 各処理の成功/失敗をログに記録
+                if result.get("voice_success", False):
+                    self.add_log("音声合成: 成功", "success")
+                else:
+                    self.add_log("音声合成: 失敗", "warning")
+                    
+                if result.get("expression_success", False):
+                    self.add_log("表情制御: 成功", "success")
+                else:
+                    self.add_log("表情制御: 失敗", "warning")
                 
                 # ステータス更新
                 if result.get("voice_success", False):
                     self.status_panel.set_status("音声再生中...")
+                    self.add_log("音声再生開始", "info")
                     # 音声再生完了を待つタイマー（実際の実装では音声再生完了イベントを使用）
                     QTimer.singleShot(8000, lambda: self.status_panel.set_status("準備完了"))  # 8秒に延長
+                    QTimer.singleShot(8000, lambda: self.add_log("音声再生完了（推定）", "info"))
                 else:
                     self.conversation_display.add_system_message("音声再生に失敗しました", "warning")
                     self.status_panel.set_status("準備完了")
@@ -1298,24 +1630,30 @@ class SiriusFaceAnimUI(QMainWindow):
                 # エラー時の処理
                 error_msg = result.get("error", "不明なエラー")
                 self.conversation_display.add_system_message(f"エラー: {error_msg}", "error")
+                self.add_log(f"エラー: {error_msg}", "error")
                 self.status_panel.set_status("エラー発生")
                 
         except Exception as e:
             self.conversation_display.add_system_message(f"結果処理エラー: {e}", "error")
+            self.add_log(f"結果処理エラー: {e}", "error")
             self.status_panel.set_status("エラー発生")
         
         finally:
             # UI復元
             self.input_panel.set_enabled(True)
+            self.add_log("UI復元完了", "info")
             # ワーカースレッドのクリーンアップ
             self.cleanup_worker_thread()
     
     def cleanup_worker_thread(self):
         """ワーカースレッドのクリーンアップ"""
         if self.conversation_worker:
+            self.add_log("ワーカースレッドをクリーンアップ中", "debug")
+            
             # シグナル切断
             try:
                 self.conversation_worker.conversation_finished.disconnect()
+                self.conversation_worker.progress_update.disconnect()
             except:
                 pass
             
@@ -1324,12 +1662,14 @@ class SiriusFaceAnimUI(QMainWindow):
                 self.conversation_worker.stop_gracefully()
                 # 少し待ってから強制終了
                 if not self.conversation_worker.wait(2000):  # 2秒待機
+                    self.add_log("ワーカースレッド強制終了", "warning")
                     self.conversation_worker.quit()
                     self.conversation_worker.wait(1000)  # さらに1秒待機
             
             # オブジェクトを削除予約
             self.conversation_worker.deleteLater()
             self.conversation_worker = None
+            self.add_log("ワーカースレッドクリーンアップ完了", "debug")
         
         # 音声録音スレッドのクリーンアップ
         if hasattr(self.input_panel, 'voice_recorder'):
