@@ -91,8 +91,9 @@ class LLMFaceController:
         self.conversation_history = []  # 会話履歴
         self.max_history_length = 10    # 最大履歴保持数
         self.current_llm_setting = "mistral_default"  # デフォルトをMistralに変更
-        self.system_message = self.config.get("system_messages", {}).get("default", 
-            "あなたは親切で知的なAIアシスタント「シリウス」です。自然で親しみやすい日本語で答えてください。")
+        self.prompts_dir = Path("prompts")  # プロンプトディレクトリ
+        self.current_prompt = "default"  # 現在のプロンプト設定
+        self.system_message = self.load_prompt(self.current_prompt)
         
         # ステータス
         self.is_speaking = False
@@ -113,6 +114,73 @@ class LLMFaceController:
         except Exception as e:
             logger.error(f"設定ファイル読み込みエラー: {e}")
             return {}
+    
+    def load_prompt(self, prompt_name: str) -> str:
+        """プロンプトファイルを読み込み"""
+        try:
+            prompt_file = self.prompts_dir / f"{prompt_name}.txt"
+            if prompt_file.exists():
+                with open(prompt_file, 'r', encoding='utf-8') as f:
+                    prompt = f.read().strip()
+                logger.info(f"プロンプトファイル読み込み完了: {prompt_name}.txt")
+                return prompt
+            else:
+                logger.warning(f"プロンプトファイルが見つかりません: {prompt_file}")
+                # フォールバック: 設定ファイルから読み込み
+                return self.config.get("system_messages", {}).get(prompt_name, 
+                    "あなたは親切で知的なAIアシスタント「シリウス」です。自然で親しみやすい日本語で答えてください。")
+        except Exception as e:
+            logger.error(f"プロンプトファイル読み込みエラー: {e}")
+            return "あなたは親切で知的なAIアシスタント「シリウス」です。自然で親しみやすい日本語で答えてください。"
+    
+    def get_available_prompts(self) -> list:
+        """利用可能なプロンプト一覧を取得"""
+        try:
+            if not self.prompts_dir.exists():
+                self.prompts_dir.mkdir(exist_ok=True)
+                return ["default"]
+            
+            prompt_files = list(self.prompts_dir.glob("*.txt"))
+            prompt_names = [f.stem for f in prompt_files]
+            
+            # 設定ファイルからも追加（後方互換性のため）
+            config_prompts = list(self.config.get("system_messages", {}).keys())
+            
+            # 重複を除去してソート
+            all_prompts = sorted(list(set(prompt_names + config_prompts)))
+            return all_prompts if all_prompts else ["default"]
+            
+        except Exception as e:
+            logger.error(f"プロンプト一覧取得エラー: {e}")
+            return ["default"]
+    
+    def set_prompt(self, prompt_name: str):
+        """プロンプトを変更"""
+        try:
+            new_prompt = self.load_prompt(prompt_name)
+            self.system_message = new_prompt
+            self.current_prompt = prompt_name
+            logger.info(f"プロンプトを変更: {prompt_name}")
+            logger.info(f"新しいシステムメッセージ: {new_prompt[:100]}...")
+        except Exception as e:
+            logger.error(f"プロンプト変更エラー: {e}")
+    
+    def save_prompt(self, prompt_name: str, prompt_content: str):
+        """新しいプロンプトをファイルに保存"""
+        try:
+            if not self.prompts_dir.exists():
+                self.prompts_dir.mkdir(exist_ok=True)
+            
+            prompt_file = self.prompts_dir / f"{prompt_name}.txt"
+            with open(prompt_file, 'w', encoding='utf-8') as f:
+                f.write(prompt_content)
+            
+            logger.info(f"プロンプトファイル保存完了: {prompt_name}.txt")
+            return True
+            
+        except Exception as e:
+            logger.error(f"プロンプトファイル保存エラー: {e}")
+            return False
     
     def set_llm_setting(self, setting_name: str):
         """LLM設定を変更"""

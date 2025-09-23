@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QLineEdit, QComboBox, 
     QProgressBar, QScrollArea, QFrame, QSplitter, QGroupBox,
-    QCheckBox, QSpinBox, QSlider, QMessageBox
+    QCheckBox, QSpinBox, QSlider, QMessageBox, QDialog, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QThread
 from PySide6.QtGui import QFont, QIcon, QPalette, QColor
@@ -25,12 +25,13 @@ class ConversationWorker(QThread):
     """会話処理用ワーカースレッド"""
     conversation_finished = Signal(dict)
     
-    def __init__(self, controller: LLMFaceController, user_message: str, expression: str, model_setting: str):
+    def __init__(self, controller: LLMFaceController, user_message: str, expression: str, model_setting: str, prompt: str):
         super().__init__()
         self.controller = controller
         self.user_message = user_message
         self.expression = expression
         self.model_setting = model_setting
+        self.prompt = prompt
         self._is_running = False
     
     def run(self):
@@ -55,6 +56,9 @@ class ConversationWorker(QThread):
                 
                 # LLMモデル設定を変更
                 self.controller.set_llm_setting(self.model_setting)
+                
+                # プロンプト設定を変更
+                self.controller.set_prompt(self.prompt)
                     
                 result = loop.run_until_complete(
                     self.controller.process_user_input(self.user_message, self.expression)
@@ -99,6 +103,149 @@ class ConversationWorker(QThread):
     def stop_gracefully(self):
         """スレッドの優雅な停止"""
         self._is_running = False
+
+class PromptEditDialog(QDialog):
+    """プロンプト編集ダイアログ"""
+    
+    def __init__(self, controller: LLMFaceController, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.init_ui()
+    
+    def init_ui(self):
+        """UI初期化"""
+        self.setWindowTitle("プロンプト編集")
+        self.setGeometry(100, 100, 600, 400)
+        
+        # ダークテーマスタイル
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1e1e1e;
+                color: #ffffff;
+            }
+            QLabel {
+                color: #ffffff;
+                font-weight: bold;
+            }
+            QLineEdit {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QTextEdit {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 8px;
+            }
+            QComboBox {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 8px 16px;
+            }
+            QPushButton:hover {
+                background-color: #66BB6A;
+            }
+        """)
+        
+        layout = QVBoxLayout()
+        
+        # プロンプト選択
+        select_layout = QHBoxLayout()
+        select_layout.addWidget(QLabel("プロンプト選択:"))
+        self.prompt_combo = QComboBox()
+        self.prompt_combo.addItems(self.controller.get_available_prompts())
+        self.prompt_combo.currentTextChanged.connect(self.load_prompt)
+        select_layout.addWidget(self.prompt_combo)
+        layout.addLayout(select_layout)
+        
+        # プロンプト編集エリア
+        layout.addWidget(QLabel("プロンプト内容:"))
+        self.prompt_edit = QTextEdit()
+        self.prompt_edit.setMinimumHeight(200)
+        layout.addWidget(self.prompt_edit)
+        
+        # 新規プロンプト名
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("保存名:"))
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("新しいプロンプト名を入力")
+        name_layout.addWidget(self.name_edit)
+        layout.addLayout(name_layout)
+        
+        # ボタン
+        button_layout = QHBoxLayout()
+        
+        save_button = QPushButton("保存")
+        save_button.clicked.connect(self.save_prompt)
+        button_layout.addWidget(save_button)
+        
+        apply_button = QPushButton("適用")
+        apply_button.clicked.connect(self.apply_prompt)
+        button_layout.addWidget(apply_button)
+        
+        cancel_button = QPushButton("キャンセル")
+        cancel_button.clicked.connect(self.reject)
+        cancel_button.setStyleSheet("QPushButton { background-color: #757575; }")
+        button_layout.addWidget(cancel_button)
+        
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+        
+        # 初期プロンプトをロード
+        self.load_prompt()
+    
+    def load_prompt(self):
+        """選択されたプロンプトをロード"""
+        prompt_name = self.prompt_combo.currentText()
+        if prompt_name:
+            prompt_content = self.controller.load_prompt(prompt_name)
+            self.prompt_edit.setPlainText(prompt_content)
+            self.name_edit.setText(prompt_name)
+    
+    def save_prompt(self):
+        """プロンプトを保存"""
+        name = self.name_edit.text().strip()
+        content = self.prompt_edit.toPlainText().strip()
+        
+        if not name:
+            QMessageBox.warning(self, "警告", "プロンプト名を入力してください")
+            return
+        
+        if not content:
+            QMessageBox.warning(self, "警告", "プロンプト内容を入力してください")
+            return
+        
+        success = self.controller.save_prompt(name, content)
+        if success:
+            QMessageBox.information(self, "成功", f"プロンプト '{name}' を保存しました")
+            # プロンプト一覧を更新
+            self.prompt_combo.clear()
+            self.prompt_combo.addItems(self.controller.get_available_prompts())
+            self.prompt_combo.setCurrentText(name)
+        else:
+            QMessageBox.critical(self, "エラー", "プロンプトの保存に失敗しました")
+    
+    def apply_prompt(self):
+        """プロンプトを適用"""
+        name = self.prompt_combo.currentText()
+        if name:
+            self.controller.set_prompt(name)
+            QMessageBox.information(self, "成功", f"プロンプト '{name}' を適用しました")
+            self.accept()
 
 class ConversationDisplay(QWidget):
     """会話表示ウィジェット"""
@@ -170,7 +317,7 @@ class ConversationDisplay(QWidget):
 
 class InputPanel(QWidget):
     """入力パネルウィジェット"""
-    send_message = Signal(str, str, str)  # message, expression, model_setting
+    send_message = Signal(str, str, str, str)  # message, expression, model_setting, prompt
     
     def __init__(self):
         super().__init__()
@@ -327,7 +474,73 @@ class InputPanel(QWidget):
         first_row.addLayout(expression_layout)
         first_row.addLayout(model_layout)
         
+        # 第2行: プロンプト選択
+        second_row = QHBoxLayout()
+        
+        # プロンプト選択
+        prompt_layout = QVBoxLayout()
+        prompt_label = QLabel("プロンプト:")
+        prompt_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+        prompt_layout.addWidget(prompt_label)
+        self.prompt_combo = QComboBox()
+        # プロンプト一覧は初期化時に設定
+        self.prompt_combo.setCurrentText("default")
+        self.prompt_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px;
+                min-width: 150px;
+            }
+            QComboBox::drop-down {
+                border-left: 1px solid #555;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 4px solid #ffffff;
+                margin: 0 2px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                selection-background-color: #64B5F6;
+            }
+        """)
+        prompt_layout.addWidget(self.prompt_combo)
+        
+        # プロンプト編集ボタン
+        prompt_edit_button = QPushButton("編集")
+        prompt_edit_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 4px 8px;
+                max-height: 24px;
+            }
+            QPushButton:hover {
+                background-color: #FFB74D;
+            }
+            QPushButton:pressed {
+                background-color: #F57C00;
+            }
+        """)
+        prompt_edit_button.clicked.connect(self.edit_prompt)
+        prompt_layout.addWidget(prompt_edit_button)
+        
+        second_row.addLayout(prompt_layout)
+        second_row.addStretch()  # 右側に余白を追加
+        
         settings_layout.addLayout(first_row)
+        settings_layout.addLayout(second_row)
         settings_group.setLayout(settings_layout)
         
         # ボタンエリア
@@ -413,7 +626,8 @@ class InputPanel(QWidget):
         if message:
             expression = self.expression_combo.currentText()
             model_setting = self.model_combo.currentText()
-            self.send_message.emit(message, expression, model_setting)
+            prompt = self.prompt_combo.currentText()
+            self.send_message.emit(message, expression, model_setting, prompt)
             self.message_input.clear()
     
     def clear_input(self):
@@ -426,6 +640,19 @@ class InputPanel(QWidget):
         self.send_button.setEnabled(enabled)
         self.expression_combo.setEnabled(enabled)
         self.model_combo.setEnabled(enabled)
+        self.prompt_combo.setEnabled(enabled)
+    
+    def edit_prompt(self):
+        """プロンプト編集ダイアログを開く"""
+        self.parent().parent().parent().edit_prompt_dialog()
+    
+    def update_prompt_list(self, prompts: list):
+        """プロンプト一覧を更新"""
+        current = self.prompt_combo.currentText()
+        self.prompt_combo.clear()
+        self.prompt_combo.addItems(prompts)
+        if current in prompts:
+            self.prompt_combo.setCurrentText(current)
 
 class StatusPanel(QWidget):
     """ステータスパネルウィジェット"""
@@ -559,21 +786,39 @@ class SiriusFaceAnimUI(QMainWindow):
         # 初期メッセージ
         self.conversation_display.add_system_message("シリウス音声対話システムが起動しました", "success")
         self.conversation_display.add_system_message("メッセージを入力して「送信」ボタンを押すか、Cmd+Enter（macOS）またはCtrl+Enter（Windows/Linux）で送信できます", "info")
+        
+        # プロンプト一覧を初期化
+        self.update_prompt_list()
+    
+    def update_prompt_list(self):
+        """プロンプト一覧を更新"""
+        try:
+            prompts = self.controller.get_available_prompts()
+            self.input_panel.update_prompt_list(prompts)
+        except Exception as e:
+            print(f"プロンプト一覧更新エラー: {e}")
+    
+    def edit_prompt_dialog(self):
+        """プロンプト編集ダイアログを開く"""
+        dialog = PromptEditDialog(self.controller, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # プロンプト一覧を更新
+            self.update_prompt_list()
     
     def init_connections(self):
         """シグナル・スロット接続を初期化"""
         self.input_panel.send_message.connect(self.handle_user_message)
     
-    def handle_user_message(self, message: str, expression: str, model_setting: str):
+    def handle_user_message(self, message: str, expression: str, model_setting: str, prompt: str):
         """ユーザーメッセージを処理"""
         # UI更新
         self.conversation_display.add_user_message(message)
-        self.conversation_display.add_system_message(f"モデル: {model_setting}", "info")
+        self.conversation_display.add_system_message(f"モデル: {model_setting} | プロンプト: {prompt}", "info")
         self.input_panel.set_enabled(False)
         self.status_panel.set_status("処理中...", True)
         
         # ワーカースレッドで処理
-        self.conversation_worker = ConversationWorker(self.controller, message, expression, model_setting)
+        self.conversation_worker = ConversationWorker(self.controller, message, expression, model_setting, prompt)
         self.conversation_worker.conversation_finished.connect(self.handle_conversation_result)
         self.conversation_worker.start()
     
