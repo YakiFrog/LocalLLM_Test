@@ -79,11 +79,12 @@ class ConversationDisplay(QWidget):
         font = QFont("Yu Gothic UI", 10)
         self.conversation_area.setFont(font)
         
-        # スタイル設定
+        # スタイル設定（ダークテーマ）
         self.conversation_area.setStyleSheet("""
             QTextEdit {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
                 border-radius: 8px;
                 padding: 10px;
             }
@@ -94,16 +95,16 @@ class ConversationDisplay(QWidget):
     
     def add_user_message(self, message: str):
         """ユーザーメッセージを追加"""
-        self.conversation_area.append(f"<div style='color: #2196F3; font-weight: bold; margin: 10px 0 5px 0;'>👤 あなた:</div>")
-        self.conversation_area.append(f"<div style='margin-left: 20px; margin-bottom: 15px; background-color: #E3F2FD; padding: 8px; border-radius: 6px;'>{message}</div>")
+        self.conversation_area.append(f"<div style='color: #64B5F6; font-weight: bold; margin: 10px 0 5px 0;'>👤 あなた:</div>")
+        self.conversation_area.append(f"<div style='margin-left: 20px; margin-bottom: 15px; background-color: #424242; color: #ffffff; padding: 8px; border-radius: 6px;'>{message}</div>")
         self.conversation_area.verticalScrollBar().setValue(
             self.conversation_area.verticalScrollBar().maximum()
         )
     
     def add_ai_message(self, message: str):
         """AIメッセージを追加"""
-        self.conversation_area.append(f"<div style='color: #4CAF50; font-weight: bold; margin: 10px 0 5px 0;'>🤖 シリウス:</div>")
-        self.conversation_area.append(f"<div style='margin-left: 20px; margin-bottom: 15px; background-color: #E8F5E8; padding: 8px; border-radius: 6px;'>{message}</div>")
+        self.conversation_area.append(f"<div style='color: #81C784; font-weight: bold; margin: 10px 0 5px 0;'>🤖 シリウス:</div>")
+        self.conversation_area.append(f"<div style='margin-left: 20px; margin-bottom: 15px; background-color: #1B5E20; color: #ffffff; padding: 8px; border-radius: 6px;'>{message}</div>")
         self.conversation_area.verticalScrollBar().setValue(
             self.conversation_area.verticalScrollBar().maximum()
         )
@@ -111,12 +112,12 @@ class ConversationDisplay(QWidget):
     def add_system_message(self, message: str, message_type: str = "info"):
         """システムメッセージを追加"""
         colors = {
-            "info": "#2196F3",
-            "success": "#4CAF50", 
-            "warning": "#FF9800",
-            "error": "#F44336"
+            "info": "#64B5F6",
+            "success": "#81C784", 
+            "warning": "#FFB74D",
+            "error": "#E57373"
         }
-        color = colors.get(message_type, "#666")
+        color = colors.get(message_type, "#BDBDBD")
         
         self.conversation_area.append(f"<div style='color: {color}; font-style: italic; margin: 5px 0; text-align: center;'>📢 {message}</div>")
         self.conversation_area.verticalScrollBar().setValue(
@@ -140,11 +141,39 @@ class InputPanel(QWidget):
         
         # メッセージ入力エリア
         input_group = QGroupBox("メッセージ入力")
+        input_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                color: #ffffff;
+                border: 2px solid #555;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+                color: #64B5F6;
+            }
+        """)
         input_layout = QVBoxLayout()
         
         self.message_input = QTextEdit()
         self.message_input.setMaximumHeight(100)
         self.message_input.setPlaceholderText("ここにメッセージを入力してください...")
+        self.message_input.setStyleSheet("""
+            QTextEdit {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-radius: 6px;
+                padding: 8px;
+            }
+            QTextEdit:focus {
+                border: 2px solid #64B5F6;
+            }
+        """)
         
         # Enterキーでの送信を設定
         self.message_input.installEventFilter(self)
@@ -154,17 +183,62 @@ class InputPanel(QWidget):
         
         # 設定パネル
         settings_group = QGroupBox("設定")
+        settings_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                color: #ffffff;
+                border: 2px solid #555;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+                color: #64B5F6;
+            }
+        """)
         settings_layout = QHBoxLayout()
         
         # 表情選択
         expression_layout = QVBoxLayout()
-        expression_layout.addWidget(QLabel("表情:"))
+        expression_label = QLabel("表情:")
+        expression_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+        expression_layout.addWidget(expression_label)
         self.expression_combo = QComboBox()
         self.expression_combo.addItems([
             "neutral", "happy", "sad", "angry", "surprised", 
             "confused", "thinking", "sleepy", "excited"
         ])
         self.expression_combo.setCurrentText("happy")
+        self.expression_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px;
+                min-width: 100px;
+            }
+            QComboBox::drop-down {
+                border-left: 1px solid #555;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 4px solid #ffffff;
+                margin: 0 2px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                selection-background-color: #64B5F6;
+            }
+        """)
         expression_layout.addWidget(self.expression_combo)
         
         settings_layout.addLayout(expression_layout)
@@ -185,14 +259,14 @@ class InputPanel(QWidget):
                 font-size: 14px;
             }
             QPushButton:hover {
-                background-color: #45a049;
+                background-color: #66BB6A;
             }
             QPushButton:pressed {
-                background-color: #3d8b40;
+                background-color: #388E3C;
             }
             QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
+                background-color: #424242;
+                color: #757575;
             }
         """)
         self.send_button.clicked.connect(self.send_message_clicked)
@@ -209,10 +283,10 @@ class InputPanel(QWidget):
                 font-size: 14px;
             }
             QPushButton:hover {
-                background-color: #1976D2;
+                background-color: #42A5F5;
             }
             QPushButton:pressed {
-                background-color: #1565C0;
+                background-color: #1976D2;
             }
         """)
         self.clear_button.clicked.connect(self.clear_input)
@@ -267,7 +341,7 @@ class StatusPanel(QWidget):
         self.status_label = QLabel("準備完了")
         self.status_label.setStyleSheet("""
             QLabel {
-                color: #4CAF50;
+                color: #81C784;
                 font-weight: bold;
                 font-size: 12px;
             }
@@ -278,9 +352,11 @@ class StatusPanel(QWidget):
         self.progress_bar.setVisible(False)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
-                border: 1px solid #ddd;
+                border: 1px solid #555;
                 border-radius: 4px;
                 text-align: center;
+                background-color: #2b2b2b;
+                color: #ffffff;
             }
             QProgressBar::chunk {
                 background-color: #4CAF50;
@@ -330,6 +406,12 @@ class SiriusFaceAnimUI(QMainWindow):
         
         # メインウィジェット
         main_widget = QWidget()
+        main_widget.setStyleSheet("""
+            QWidget {
+                background-color: #1e1e1e;
+                color: #ffffff;
+            }
+        """)
         self.setCentralWidget(main_widget)
         
         # メインレイアウト
@@ -342,10 +424,10 @@ class SiriusFaceAnimUI(QMainWindow):
             QLabel {
                 font-size: 20px;
                 font-weight: bold;
-                color: #2196F3;
+                color: #64B5F6;
                 padding: 15px;
-                background-color: #f8f9fa;
-                border-bottom: 2px solid #e9ecef;
+                background-color: #1e1e1e;
+                border-bottom: 2px solid #424242;
             }
         """)
         
@@ -461,9 +543,21 @@ def main():
     # スタイル設定
     app.setStyle("Fusion")
     
-    # ダークテーマ（オプション）
+    # ダークテーマ設定
     palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(240, 240, 240))
+    # ウィンドウ背景
+    palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 45))
+    # ボタン背景
+    palette.setColor(QPalette.ColorRole.Button, QColor(60, 60, 60))
+    # テキスト色
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(255, 255, 255))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(255, 255, 255))
+    # 入力フィールド背景
+    palette.setColor(QPalette.ColorRole.Base, QColor(35, 35, 35))
+    palette.setColor(QPalette.ColorRole.Text, QColor(255, 255, 255))
+    # ハイライト色
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(100, 181, 246))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
     app.setPalette(palette)
     
     try:
