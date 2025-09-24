@@ -39,6 +39,8 @@ class VoiceRecorder(QThread):
     transcription_ready = Signal(str)
     transcription_with_confidence = Signal(str, dict)  # テキストと信頼度情報
     error_occurred = Signal(str)
+    wake_word_detected = Signal(str)  # ウェイクワード検出シグナル
+    real_time_monitoring = Signal(bool)  # リアルタイム監視状態
     
     def __init__(self, model_name="medium", device_index=None):
         super().__init__()
@@ -70,6 +72,15 @@ class VoiceRecorder(QThread):
         self.last_voice_time = 0  # 最後に音声が検出された時刻
         self.voice_threshold = 1000  # 音声レベルの閾値
         self.auto_stopped_by_silence = False  # 沈黙検出による自動停止フラグ
+        
+        # リアルタイム監視設定
+        self.real_time_enabled = False  # リアルタイム監視の有効/無効
+        self.wake_word_enabled = True  # ウェイクワード検出の有効/無効
+        self.wake_words = ["シリウスくん", "シリウス君", "しりうすくん"]  # 検出するウェイクワード
+        self.wake_buffer_duration = 3.0  # ウェイクワード検出用バッファ時間（秒）
+        self.wake_buffer = []  # ウェイクワード検出用音声バッファ
+        self.wake_check_interval = 1.5  # ウェイクワード検出間隔（秒）
+        self.last_wake_check = 0  # 最後のウェイクワード検出時刻
         
         # Whisperモデル（選択されたモデルを使用）
         self.load_whisper_model(model_name)
@@ -157,6 +168,141 @@ class VoiceRecorder(QThread):
         if hasattr(self, 'silence_timer') and self.silence_timer.isActive():
             self.silence_timer.stop()
     
+    def start_real_time_monitoring(self):
+        """リアルタイム音声監視を開始"""
+        if not self.real_time_enabled:
+            self.real_time_enabled = True
+            self.wake_buffer = []
+            self.last_wake_check = 0
+            print("🔊 リアルタイム音声監視を開始しました")
+            print(f"🎯 検出対象ワード: {', '.join(self.wake_words)}")
+            self.real_time_monitoring.emit(True)
+            # バックグラウンドで音声監視スレッドを開始
+            if not self.isRunning():
+                self.start()
+    
+    def stop_real_time_monitoring(self):
+        """リアルタイム音声監視を停止"""
+        if self.real_time_enabled:
+            self.real_time_enabled = False
+            self.wake_buffer = []
+            print("🔇 リアルタイム音声監視を停止しました")
+            self.real_time_monitoring.emit(False)
+    
+    def check_wake_word(self, audio_chunk):
+        """ウェイクワード検出処理"""
+        if not self.wake_word_enabled or not self.real_time_enabled:
+            return False
+        
+        import time
+        current_time = time.time()
+        
+        # ウェイクワード検出用バッファに音声データを追加
+        self.wake_buffer.append(audio_chunk)
+        
+        # 音声レベルをチェックしてデバッグ表示（たまに）
+        if len(self.wake_buffer) % 50 == 0:  # 50フレームに1回表示
+            import numpy as np
+            audio_data = np.frombuffer(audio_chunk, dtype=np.int16)
+            volume = np.sqrt(np.mean(audio_data**2))
+            if volume > 100:  # 一定レベル以上の音声がある場合のみ表示
+                print(f"🎤 音声レベル: {volume:.0f} (フレーム #{len(self.wake_buffer)})")
+        
+        # バッファサイズを制限（指定時間分のデータのみ保持）
+        buffer_frames = int(self.wake_buffer_duration * self.sample_rate / self.chunk_size)
+        if len(self.wake_buffer) > buffer_frames:
+            self.wake_buffer.pop(0)
+        
+        # 定期的にウェイクワード検出を実行
+        if current_time - self.last_wake_check >= self.wake_check_interval:
+            self.last_wake_check = current_time
+            
+            if len(self.wake_buffer) >= buffer_frames // 2:  # 最低限の音声データが蓄積された場合
+                print(f"🔍 ウェイクワード検出を実行中... (バッファサイズ: {len(self.wake_buffer)}フレーム)")
+                return self.process_wake_word_detection()
+        
+        return False
+    
+    def process_wake_word_detection(self):
+        """蓄積された音声データでウェイクワード検出を実行"""
+        try:
+            # バッファの音声データを一時ファイルに保存
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                temp_filename = temp_file.name
+                
+                with wave.open(temp_filename, 'wb') as wf:
+                    wf.setnchannels(self.channels)
+                    wf.setsampwidth(pyaudio.get_sample_size(self.format))
+                    wf.setframerate(self.sample_rate)
+                    wf.writeframes(b''.join(self.wake_buffer))
+            
+            # 短時間音声認識（低精度でも高速）
+            if self.whisper_model:
+                segments, info = self.whisper_model.transcribe(
+                    temp_filename,
+                    language="ja",
+                    beam_size=1,  # 高速化のため
+                    temperature=0.2,
+                    no_speech_threshold=0.8  # 音声なしの判定を緩く
+                )
+                
+                # 認識結果からウェイクワードを検索
+                full_text = ""
+                for segment in segments:
+                    full_text += segment.text.strip()
+                
+                print(f"🔍 ウェイクワード検出チェック: '{full_text}'")
+                
+                # デバッグ: 認識された音声が空でない場合は詳細表示
+                if full_text.strip():
+                    print(f"📝 音声認識結果: 長さ={len(full_text)}, 内容='{full_text}'")
+                    print(f"🎯 検索対象: {self.wake_words}")
+                
+                # ウェイクワードが含まれているかチェック（部分一致とより柔軟な検索）
+                for wake_word in self.wake_words:
+                    # 厳密一致
+                    if wake_word in full_text:
+                        print(f"✅ ウェイクワード検出（厳密一致）: '{wake_word}' in '{full_text}'")
+                        self.wake_word_detected.emit(wake_word)
+                        self.last_wake_check = time.time() + 2.0
+                        return True
+                    # 柔軟一致（ひらがな/カタカナ変換を考慮）
+                    elif self.fuzzy_match_wake_word(wake_word, full_text):
+                        print(f"✅ ウェイクワード検出（柔軟一致）: '{wake_word}' ~ '{full_text}'")
+                        self.wake_word_detected.emit(wake_word)
+                        self.last_wake_check = time.time() + 2.0
+                        return True
+            
+            # 一時ファイルを削除
+            try:
+                os.unlink(temp_filename)
+            except:
+                pass
+                
+        except Exception as e:
+            print(f"❌ ウェイクワード検出エラー: {e}")
+        
+        return False
+    
+    def fuzzy_match_wake_word(self, wake_word, text):
+        """ウェイクワードの柔軟マッチング（ひらがな/カタカナ変換を考慮）"""
+        # 基本的な変換パターン
+        patterns = [
+            wake_word,
+            wake_word.replace('シリウス', 'しりうす'),
+            wake_word.replace('くん', '君'),
+            wake_word.replace('シリウス', 'シリウス'),
+            'シリウス',
+            'しりうす',
+            'シリウス君',
+            'しりうす君'
+        ]
+        
+        for pattern in patterns:
+            if pattern in text:
+                return True
+        return False
+    
     def run(self):
         """録音処理実行"""
         try:
@@ -173,22 +319,36 @@ class VoiceRecorder(QThread):
                 frames_per_buffer=self.chunk_size
             )
             
-            self.recording_started.emit()
+            # 録音開始またはリアルタイム監視開始のシグナル
+            if self.is_recording:
+                self.recording_started.emit()
+            elif self.real_time_enabled:
+                print("🔊 リアルタイム音声監視を開始します...")
             
             # 沈黙検出の初期化
             import time
             self.last_voice_time = time.time()
             self.has_detected_voice = False  # 音声が検出されたかどうか
             
-            # 録音ループ
-            while self.is_recording:
+            # 録音ループ（通常録音とリアルタイム監視の両方に対応）
+            while self.is_recording or self.real_time_enabled:
                 try:
                     data = stream.read(self.chunk_size, exception_on_overflow=False)
-                    self.audio_data.append(data)
                     
-                    # 音声レベル検出（沈黙検出用）
-                    if self.silence_detection_enabled:
-                        self.detect_voice_activity(data)
+                    # 通常録音モードの場合
+                    if self.is_recording:
+                        self.audio_data.append(data)
+                        
+                        # 音声レベル検出（沈黙検出用）
+                        if self.silence_detection_enabled:
+                            self.detect_voice_activity(data)
+                    
+                    # リアルタイム監視モードの場合
+                    elif self.real_time_enabled:
+                        # ウェイクワード検出
+                        if self.check_wake_word(data):
+                            # ウェイクワード検出時は監視を一時停止
+                            break
                     
                 except Exception as e:
                     print(f"録音エラー: {e}")
@@ -1388,8 +1548,30 @@ class InputPanel(QWidget):
         """)
         self.clear_button.clicked.connect(self.clear_conversation)
         
+        # リアルタイム監視ボタン
+        self.monitoring_button = QPushButton("🔊 監視開始")
+        self.monitoring_button.setMinimumHeight(32)
+        self.monitoring_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background-color: #FFB74D;
+            }
+            QPushButton:pressed {
+                background-color: #F57C00;
+            }
+        """)
+        self.monitoring_button.clicked.connect(self.toggle_real_time_monitoring)
+        
         button_layout.addWidget(self.send_button)
         button_layout.addWidget(self.voice_button)
+        button_layout.addWidget(self.monitoring_button)
         button_layout.addWidget(self.clear_button)
         
         # レイアウト組み立て
@@ -1790,6 +1972,74 @@ class InputPanel(QWidget):
                 f"🔇 沈黙検出機能: {status} (閾値: {self.voice_recorder.silence_threshold}秒)", 
                 "info"
             )
+    
+    def toggle_real_time_monitoring(self):
+        """リアルタイム監視の開始・停止を切り替え"""
+        print("🔘 リアルタイム監視ボタンがクリックされました")
+        
+        if not hasattr(self, 'voice_recorder') or not self.voice_recorder:
+            print("❌ VoiceRecorderが利用できません")
+            return
+            
+        print(f"📊 現在の監視状態: {self.voice_recorder.real_time_enabled}")
+        
+        if self.voice_recorder.real_time_enabled:
+            # 監視停止
+            print("🔇 リアルタイム監視を停止します")
+            self.voice_recorder.stop_real_time_monitoring()
+            self.monitoring_button.setText("🔊 監視開始")
+            self.monitoring_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #FF9800;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    padding: 4px 8px;
+                }
+                QPushButton:hover {
+                    background-color: #FFB74D;
+                }
+                QPushButton:pressed {
+                    background-color: #F57C00;
+                }
+            """)
+            
+            # メインウィンドウにログ表示
+            main_window = self.parent().parent().parent()
+            if hasattr(main_window, 'add_log'):
+                main_window.add_log("🔇 リアルタイム監視を停止しました", "info")
+        else:
+            # 監視開始
+            print("🔊 リアルタイム監視を開始します")
+            self.voice_recorder.start_real_time_monitoring()
+            self.monitoring_button.setText("🔇 監視停止")
+            self.monitoring_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    padding: 4px 8px;
+                }
+                QPushButton:hover {
+                    background-color: #66BB6A;
+                }
+                QPushButton:pressed {
+                    background-color: #388E3C;
+                }
+            """)
+            
+            # メインウィンドウにログ表示
+            main_window = self.parent().parent().parent()
+            if hasattr(main_window, 'add_log'):
+                main_window.add_log("🔊 リアルタイム監視を開始しました - 「シリウスくん」と呼んでください", "success")
+    
+    def start_voice_input(self):
+        """音声入力を開始（ウェイクワード検出後の自動開始用）"""
+        if not self.voice_recorder.is_recording:
+            self.toggle_voice_recording()
 
 class StatusPanel(QWidget):
     """ステータスパネルウィジェット"""
@@ -2035,6 +2285,9 @@ class SiriusFaceAnimUI(QMainWindow):
         self.input_panel.send_message.connect(self.handle_user_message)
         # 音声認識の信頼度情報を処理
         self.input_panel.voice_recorder.transcription_with_confidence.connect(self.handle_confidence_update)
+        # リアルタイム監視とウェイクワード検出
+        self.input_panel.voice_recorder.wake_word_detected.connect(self.handle_wake_word_detected)
+        self.input_panel.voice_recorder.real_time_monitoring.connect(self.handle_real_time_monitoring_state)
     
     def add_log(self, message: str, log_type: str = "info"):
         """ログメッセージを追加"""
@@ -2052,6 +2305,61 @@ class SiriusFaceAnimUI(QMainWindow):
                     f"範囲={confidence_info['min_confidence']:.1f}%-{confidence_info['max_confidence']:.1f}%, "
                     f"標準偏差={confidence_info['std_confidence']:.1f}%, "
                     f"言語確率={confidence_info['language_probability']:.1f}%", "debug")
+    
+    def handle_wake_word_detected(self, wake_word: str):
+        """ウェイクワード検出時の処理"""
+        self.add_log(f"✅ ウェイクワード検出: '{wake_word}'", "success")
+        
+        # 「はい、なんですか」の応答を生成
+        self.respond_to_wake_word()
+        
+        # 音声入力を自動開始
+        QTimer.singleShot(2000, self.start_voice_input_after_wake_word)  # 2秒後に音声入力開始
+    
+    def handle_real_time_monitoring_state(self, is_active: bool):
+        """リアルタイム監視状態の変更を処理"""
+        status = "有効" if is_active else "無効"
+        self.add_log(f"🔊 リアルタイム音声監視: {status}", "info")
+        
+        # UIの状態表示を更新
+        if hasattr(self, 'status_panel'):
+            self.status_panel.update_monitoring_status(is_active)
+    
+    def respond_to_wake_word(self):
+        """ウェイクワード検出時の自動応答"""
+        try:
+            # 「はい、なんですか」を音声合成で再生
+            response_text = "はい、なんですか"
+            self.add_log(f"🤖 自動応答: {response_text}", "success")
+            
+            # 会話表示にAIの応答として追加
+            self.conversation_display.add_ai_message(response_text, None)
+            
+            # VOICEVOX で音声合成（非同期）
+            if self.controller and self.controller.voicevox_controller:
+                import threading
+                threading.Thread(
+                    target=self.controller.voicevox_controller.speak,
+                    args=(response_text,),
+                    daemon=True
+                ).start()
+                
+        except Exception as e:
+            self.add_log(f"❌ 自動応答エラー: {e}", "error")
+    
+    def start_voice_input_after_wake_word(self):
+        """ウェイクワード検出後の音声入力開始"""
+        try:
+            self.add_log("🎤 ウェイクワード応答後、音声入力を開始します", "info")
+            # 音声入力パネルの録音開始
+            if hasattr(self.input_panel, 'start_voice_input'):
+                self.input_panel.start_voice_input()
+            else:
+                # フォールバック: 音声録音ボタンをプログラム的にクリック
+                if hasattr(self.input_panel, 'voice_button'):
+                    self.input_panel.voice_button.click()
+        except Exception as e:
+            self.add_log(f"❌ 音声入力開始エラー: {e}", "error")
     
     def handle_user_message(self, message: str, expression: str, model_setting: str, prompt: str):
         """ユーザーメッセージを処理"""
