@@ -27,7 +27,7 @@ from PySide6.QtGui import QFont, QIcon, QPalette, QColor
 import speech_recognition as sr
 import pyaudio
 import wave
-import whisper
+from faster_whisper import WhisperModel
 
 # LLM Face Controllerのインポート
 from llm_face_controller import LLMFaceController
@@ -37,6 +37,7 @@ class VoiceRecorder(QThread):
     recording_started = Signal()
     recording_stopped = Signal()
     transcription_ready = Signal(str)
+    transcription_with_confidence = Signal(str, dict)  # テキストと信頼度情報
     error_occurred = Signal(str)
     
     def __init__(self, model_name="medium", device_index=None):
@@ -51,6 +52,15 @@ class VoiceRecorder(QThread):
         self.record_seconds_min = 1.0   # 最小録音時間（秒）
         self.device_index = device_index  # マイクデバイスインデックス
         
+        # 精度履歴管理
+        self.confidence_history = []  # 信頼度履歴
+        self.recognition_stats = {
+            'total_recognitions': 0,
+            'avg_confidence': 0.0,
+            'min_confidence': 1.0,
+            'max_confidence': 0.0
+        }
+        
         # Whisperモデル（選択されたモデルを使用）
         self.load_whisper_model(model_name)
     
@@ -61,12 +71,44 @@ class VoiceRecorder(QThread):
             import warnings
             warnings.filterwarnings("ignore", message="FP16 is not supported on CPU")
             
-            print(f"🔄 Whisperモデル（{model_name}）をロード中...")
-            self.whisper_model = whisper.load_model(model_name)
-            print(f"✅ Whisperモデル（{model_name}）が正常にロードされました")
+            print(f"🔄 Faster-Whisperモデル（{model_name}）をロード中...")
+            # faster-whisperでは計算タイプとデバイスを指定可能
+            # MacではCPUを使用、量子化で高速化
+            self.whisper_model = WhisperModel(
+                model_name,
+                device="cpu",
+                compute_type="int8"  # 量子化で高速化・メモリ使用量削減
+            )
+            print(f"✅ Faster-Whisperモデル（{model_name}）のロードが完了しました")
+            self.model_name = model_name
         except Exception as e:
-            print(f"❌ Whisper {model_name}モデル読み込み失敗: {e}")
-            self.whisper_model = None
+            print(f"❌ Faster-Whisperモデルロードエラー: {e}")
+            # フォールバック: large → medium → base の順で試行
+            fallback_models = ["medium", "base", "small"]
+            if model_name in fallback_models:
+                fallback_models.remove(model_name)
+            
+            fallback_success = False
+            for fallback_model in fallback_models:
+                try:
+                    print(f"🔄 フォールバック: {fallback_model}モデルを試行中...")
+                    self.whisper_model = WhisperModel(
+                        fallback_model,
+                        device="cpu",
+                        compute_type="int8"
+                    )
+                    print(f"✅ フォールバック成功: {fallback_model}モデルを使用します")
+                    self.model_name = fallback_model
+                    fallback_success = True
+                    break
+                except Exception as fallback_error:
+                    print(f"❌ {fallback_model}モデルもロードに失敗: {fallback_error}")
+                    continue
+            
+            if not fallback_success:
+                print("❌ すべてのWhisperモデルのロードに失敗しました")
+                self.whisper_model = None
+                self.model_name = None
     
     @staticmethod
     def get_audio_devices():
@@ -181,46 +223,157 @@ class VoiceRecorder(QThread):
                     
                     wf.writeframes(audio_bytes)
             
-            # Whisperで音声認識（高精度日本語設定）
+            # Faster-Whisperで音声認識（高精度日本語設定）
             if self.whisper_model:
                 try:
-                    print("🎤 音声認識処理開始...")
-                    # 日本語に特化した高精度設定でWhisperを実行
-                    result = self.whisper_model.transcribe(
-                        temp_filename, 
+                    print("🎤 音声認識処理開始（Faster-Whisper使用）...")
+                    # faster-whisperでは segments と info を返す
+                    # 単語レベルの信頼度情報を取得するため word_timestamps=True に変更
+                    segments, info = self.whisper_model.transcribe(
+                        temp_filename,
                         language="ja",              # 日本語指定
-                        fp16=False,                 # CPUではFP16を無効化
-                        verbose=False,              # 詳細ログを無効化
+                        beam_size=5,                # ビームサーチサイズ（精度向上）
                         temperature=0.0,            # 決定論的出力（精度向上）
                         compression_ratio_threshold=2.4,  # 圧縮率閾値（ノイズ除去）
-                        logprob_threshold=-1.0,     # 確率閾値（低信頼度フィルタ）
+                        log_prob_threshold=-1.0,    # 確率閾値（低信頼度フィルタ）
                         no_speech_threshold=0.6,    # 無音判定閾値
                         condition_on_previous_text=False,  # 前のテキストに依存しない
                         initial_prompt="以下は日本語の音声です。",  # 日本語コンテキスト
-                        word_timestamps=False       # 単語レベルのタイムスタンプは不要
+                        word_timestamps=True,       # 単語レベルの信頼度取得のため有効化
+                        vad_filter=True,           # Voice Activity Detection（音声区間検出）
+                        vad_parameters=dict(min_silence_duration_ms=500)  # 無音区間の最小時間
                     )
-                    transcribed_text = result["text"].strip()
+                    
+                    # セグメントからテキストと信頼度情報を抽出
+                    segments_list = list(segments)  # ジェネレータをリストに変換
+                    transcribed_text = "".join(segment.text for segment in segments_list).strip()
+                    
+                    # 信頼度情報を計算
+                    confidence_info = self.calculate_confidence_metrics(segments_list, info)
+                    
+                    print(f"🎤 認識言語: {info.language} (確率: {info.language_probability:.2f})")
+                    print(f"🎤 音声時間: {info.duration:.2f}秒")
+                    print(f"📊 認識精度: {confidence_info['overall_confidence']:.1f}% (単語数: {confidence_info['word_count']})")
                     
                     # 結果の後処理（日本語特有の問題を修正）
                     if transcribed_text:
                         # 不要な空白や記号を除去
                         transcribed_text = transcribed_text.replace("。", "").replace("、", "").strip()
                         print(f"🎤 音声認識結果: '{transcribed_text}'")
+                        
+                        # 統計を更新
+                        self.update_recognition_stats(confidence_info)
+                        
+                        # 通常のシグナルと信頼度付きシグナルの両方を送信
                         self.transcription_ready.emit(transcribed_text)
+                        self.transcription_with_confidence.emit(transcribed_text, confidence_info)
                     else:
                         print("⚠️ 音声が認識できませんでした（空の結果）")
                         self.error_occurred.emit("音声が認識できませんでした。もう一度お試しください。")
                 except Exception as e:
-                    print(f"❌ Whisper音声認識エラー: {e}")
-                    self.error_occurred.emit(f"音声認識処理エラー: {str(e)}")
+                    print(f"❌ Faster-Whisper音声認識エラー: {e}")
+                    # エラー時のフォールバック処理を追加
+                    error_msg = str(e)
+                    if "CUDA" in error_msg or "GPU" in error_msg:
+                        self.error_occurred.emit("GPU関連エラーが発生しました。CPUモードで再試行してください。")
+                    elif "model" in error_msg.lower():
+                        self.error_occurred.emit(f"モデルエラー: より軽量なモデル（baseやsmall）をお試しください。")
+                    else:
+                        self.error_occurred.emit(f"音声認識処理エラー: {error_msg}")
             else:
-                self.error_occurred.emit("Whisperモデルが利用できません")
+                self.error_occurred.emit("Faster-Whisperモデルが利用できません")
             
             # 一時ファイルを削除
             os.unlink(temp_filename)
             
         except Exception as e:
             self.error_occurred.emit(f"音声認識エラー: {str(e)}")
+    
+    def calculate_confidence_metrics(self, segments, info):
+        """セグメントから信頼度メトリクスを計算"""
+        try:
+            word_confidences = []
+            word_count = 0
+            total_duration = 0
+            
+            for segment in segments:
+                if hasattr(segment, 'words') and segment.words:
+                    # 単語レベルの信頼度を取得
+                    for word in segment.words:
+                        if hasattr(word, 'probability') and word.probability is not None:
+                            # 対数確率を信頼度パーセンテージに変換
+                            confidence = min(100.0, max(0.0, (word.probability + 5.0) / 5.0 * 100))
+                            word_confidences.append(confidence)
+                            word_count += 1
+                
+                # セグメントレベルの情報
+                if hasattr(segment, 'avg_logprob') and segment.avg_logprob is not None:
+                    # 平均対数確率を信頼度に変換
+                    segment_confidence = min(100.0, max(0.0, (segment.avg_logprob + 5.0) / 5.0 * 100))
+                    word_confidences.append(segment_confidence)
+                
+                total_duration += getattr(segment, 'end', 0) - getattr(segment, 'start', 0)
+            
+            # 全体的な信頼度を計算
+            if word_confidences:
+                overall_confidence = sum(word_confidences) / len(word_confidences)
+                min_confidence = min(word_confidences)
+                max_confidence = max(word_confidences)
+                std_confidence = (sum((x - overall_confidence) ** 2 for x in word_confidences) / len(word_confidences)) ** 0.5
+            else:
+                # フォールバック: 言語確率を使用
+                overall_confidence = info.language_probability * 100 if hasattr(info, 'language_probability') else 50.0
+                min_confidence = max_confidence = overall_confidence
+                std_confidence = 0.0
+                word_count = len(segments)
+            
+            return {
+                'overall_confidence': overall_confidence,
+                'min_confidence': min_confidence,
+                'max_confidence': max_confidence,
+                'std_confidence': std_confidence,
+                'word_count': word_count,
+                'segment_count': len(segments),
+                'audio_duration': getattr(info, 'duration', total_duration),
+                'language_probability': getattr(info, 'language_probability', 0.0) * 100,
+                'word_confidences': word_confidences
+            }
+            
+        except Exception as e:
+            print(f"⚠️ 信頼度計算エラー: {e}")
+            # エラー時のデフォルト値
+            return {
+                'overall_confidence': 50.0,
+                'min_confidence': 50.0,
+                'max_confidence': 50.0,
+                'std_confidence': 0.0,
+                'word_count': 0,
+                'segment_count': len(segments) if segments else 0,
+                'audio_duration': 0.0,
+                'language_probability': 50.0,
+                'word_confidences': []
+            }
+    
+    def update_recognition_stats(self, confidence_info):
+        """認識統計を更新"""
+        self.recognition_stats['total_recognitions'] += 1
+        self.confidence_history.append(confidence_info['overall_confidence'])
+        
+        # 最新20回の平均を計算
+        recent_confidences = self.confidence_history[-20:]
+        self.recognition_stats['avg_confidence'] = sum(recent_confidences) / len(recent_confidences)
+        
+        # 最小値・最大値を更新
+        self.recognition_stats['min_confidence'] = min(self.recognition_stats['min_confidence'], confidence_info['overall_confidence'])
+        self.recognition_stats['max_confidence'] = max(self.recognition_stats['max_confidence'], confidence_info['overall_confidence'])
+        
+        print(f"📊 認識統計 - 平均精度: {self.recognition_stats['avg_confidence']:.1f}% "
+              f"(回数: {self.recognition_stats['total_recognitions']}, "
+              f"範囲: {self.recognition_stats['min_confidence']:.1f}%-{self.recognition_stats['max_confidence']:.1f}%)")
+    
+    def get_recognition_stats(self):
+        """認識統計を取得"""
+        return self.recognition_stats.copy(), self.confidence_history.copy()
 
 class ConversationWorker(QThread):
     """会話処理用ワーカースレッド"""
@@ -673,10 +826,16 @@ class InputPanel(QWidget):
         self.voice_recorder.recording_started.connect(self.on_recording_started)
         self.voice_recorder.recording_stopped.connect(self.on_recording_stopped)
         self.voice_recorder.transcription_ready.connect(self.on_transcription_ready)
+        self.voice_recorder.transcription_with_confidence.connect(self.on_transcription_with_confidence)
         self.voice_recorder.error_occurred.connect(self.on_voice_error)
         
         # 利用可能な音声デバイスを取得
         self.audio_devices = VoiceRecorder.get_audio_devices()
+        
+        # 自動送信設定
+        self.auto_send_enabled = True  # 自動送信を有効にするかどうか
+        self.auto_send_threshold = 80.0  # 自動送信する精度の閾値（%）
+        self.auto_send_min_words = 2  # 自動送信する最小単語数
         
         self.init_ui()
     
@@ -1006,12 +1165,46 @@ class InputPanel(QWidget):
         prompt_controls.addWidget(prompt_edit_button)
         prompt_layout.addLayout(prompt_controls)
         
+        # 自動送信設定（コンパクト）
+        auto_send_layout = QVBoxLayout()
+        auto_send_layout.setSpacing(2)
+        auto_send_label = QLabel("自動送信:")
+        auto_send_label.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 12px;")
+        auto_send_layout.addWidget(auto_send_label)
+        
+        self.auto_send_checkbox = QCheckBox("有効")
+        self.auto_send_checkbox.setChecked(self.auto_send_enabled)
+        self.auto_send_checkbox.setMaximumHeight(28)
+        self.auto_send_checkbox.setStyleSheet("""
+            QCheckBox {
+                color: #ffffff;
+                font-size: 11px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QCheckBox::indicator:unchecked {
+                background-color: #2b2b2b;
+                border: 1px solid #555;
+                border-radius: 3px;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4CAF50;
+                border: 1px solid #4CAF50;
+                border-radius: 3px;
+            }
+        """)
+        self.auto_send_checkbox.stateChanged.connect(self.toggle_auto_send)
+        auto_send_layout.addWidget(self.auto_send_checkbox)
+        
         # すべての設定を水平に配置
         settings_layout.addLayout(expression_layout)
         settings_layout.addLayout(whisper_layout)
         settings_layout.addLayout(mic_layout)
         settings_layout.addLayout(model_layout)
         settings_layout.addLayout(prompt_layout)
+        settings_layout.addLayout(auto_send_layout)
         settings_layout.addStretch()  # 右側に余白を追加
         
         settings_group.setLayout(settings_layout)
@@ -1122,6 +1315,10 @@ class InputPanel(QWidget):
             elif event.key() == Qt.Key.Key_Escape:
                 self.clear_input()
                 return True
+            # Vキーで音声入力開始/停止
+            elif event.key() == Qt.Key.Key_V and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+                self.toggle_voice_recording()
+                return True
         return super().eventFilter(obj, event)
     
     def show_input_context_menu(self, position):
@@ -1217,6 +1414,7 @@ class InputPanel(QWidget):
             self.voice_recorder.recording_started.connect(self.on_recording_started)
             self.voice_recorder.recording_stopped.connect(self.on_recording_stopped)
             self.voice_recorder.transcription_ready.connect(self.on_transcription_ready)
+            self.voice_recorder.transcription_with_confidence.connect(self.on_transcription_with_confidence)
             self.voice_recorder.error_occurred.connect(self.on_voice_error)
             
             # 古いレコーダーをクリーンアップ
@@ -1227,8 +1425,8 @@ class InputPanel(QWidget):
             # 親ウィンドウの会話表示にメッセージを追加
             main_window = self.parent().parent().parent()
             if hasattr(main_window, 'conversation_display'):
-                main_window.conversation_display.add_system_message(f"Whisperモデルを {new_model} に変更しました", "info")
-                main_window.add_log(f"Whisperモデル変更: {self.current_whisper_model} → {new_model}", "info")
+                main_window.conversation_display.add_system_message(f"Faster-Whisperモデルを {new_model} に変更しました", "info")
+                main_window.add_log(f"Faster-Whisperモデル変更: {self.current_whisper_model} → {new_model}", "info")
     
     def change_microphone(self):
         """マイクデバイスを変更"""
@@ -1250,6 +1448,7 @@ class InputPanel(QWidget):
             self.voice_recorder.recording_started.connect(self.on_recording_started)
             self.voice_recorder.recording_stopped.connect(self.on_recording_stopped)
             self.voice_recorder.transcription_ready.connect(self.on_transcription_ready)
+            self.voice_recorder.transcription_with_confidence.connect(self.on_transcription_with_confidence)
             self.voice_recorder.error_occurred.connect(self.on_voice_error)
             
             # 古いレコーダーをクリーンアップ
@@ -1299,8 +1498,8 @@ class InputPanel(QWidget):
         # 親ウィンドウの会話表示にメッセージを追加
         main_window = self.parent().parent().parent()
         if hasattr(main_window, 'conversation_display'):
-            main_window.conversation_display.add_system_message("🎤 音声録音中... 話してください", "info")
-            main_window.add_log("音声録音開始", "info")
+            main_window.conversation_display.add_system_message("🎤 音声録音中... 話してください（Vキーで停止）", "info")
+            main_window.add_log("音声録音開始 (Vキーショートカット対応)", "info")
     
     def on_recording_stopped(self):
         """録音停止時の処理"""
@@ -1339,6 +1538,44 @@ class InputPanel(QWidget):
             main_window.conversation_display.add_system_message(f"✅ 音声認識完了: {text}", "success")
             main_window.add_log(f"音声認識成功: {text}", "success")
     
+    def on_transcription_with_confidence(self, text: str, confidence_info: dict):
+        """信頼度付き音声認識完了時の処理"""
+        # 基本的な処理は通常の transcription_ready と同じ
+        self.message_input.setText(text)
+        
+        # 信頼度情報を含む詳細なログ出力
+        main_window = self.parent().parent().parent()
+        if hasattr(main_window, 'conversation_display'):
+            # 信頼度に基づいてメッセージの色を変更
+            if confidence_info['overall_confidence'] >= 80:
+                confidence_color = "success"
+                confidence_icon = "✅"
+            elif confidence_info['overall_confidence'] >= 60:
+                confidence_color = "warning"
+                confidence_icon = "⚠️"
+            else:
+                confidence_color = "error"
+                confidence_icon = "❌"
+            
+            # 詳細な信頼度情報を表示
+            confidence_msg = (f"{confidence_icon} 音声認識完了: {text} "
+                            f"(精度: {confidence_info['overall_confidence']:.1f}%, "
+                            f"単語数: {confidence_info['word_count']}, "
+                            f"時間: {confidence_info['audio_duration']:.1f}s)")
+            
+            main_window.conversation_display.add_system_message(confidence_msg, confidence_color)
+            
+            # ログには統計情報も含める
+            stats, history = self.voice_recorder.get_recognition_stats()
+            detailed_log = (f"音声認識: {text} | "
+                          f"精度: {confidence_info['overall_confidence']:.1f}% "
+                          f"(範囲: {confidence_info['min_confidence']:.1f}%-{confidence_info['max_confidence']:.1f}%) | "
+                          f"平均精度: {stats['avg_confidence']:.1f}%")
+            main_window.add_log(detailed_log, "success")
+        
+        # 高精度の場合は自動送信
+        self.auto_send_if_high_confidence(text, confidence_info)
+    
     def on_voice_error(self, error_message: str):
         """音声エラー時の処理"""
         # 親ウィンドウの会話表示にエラーメッセージを追加
@@ -1365,6 +1602,62 @@ class InputPanel(QWidget):
                 background-color: #D84315;
             }
         """)
+    
+    def auto_send_if_high_confidence(self, text: str, confidence_info: dict):
+        """高精度の場合に自動送信を実行"""
+        if not self.auto_send_enabled:
+            return
+        
+        # 自動送信の条件をチェック
+        confidence_ok = confidence_info['overall_confidence'] >= self.auto_send_threshold
+        word_count_ok = confidence_info['word_count'] >= self.auto_send_min_words
+        text_ok = len(text.strip()) > 1  # 最小文字数チェック
+        
+        if confidence_ok and word_count_ok and text_ok:
+            # 高精度認識時は即座に自動送信
+            main_window = self.parent().parent().parent()
+            if hasattr(main_window, 'conversation_display'):
+                main_window.add_log(f"高精度認識 ({confidence_info['overall_confidence']:.1f}%) - 自動送信実行", "success")
+            
+            # 即座に送信処理を実行
+            self.send_message_clicked()
+        else:
+            # 自動送信の条件を満たさない場合の理由表示
+            reason = []
+            if not confidence_ok:
+                reason.append(f"精度不足({confidence_info['overall_confidence']:.1f}% < {self.auto_send_threshold}%)")
+            if not word_count_ok:
+                reason.append(f"単語数不足({confidence_info['word_count']} < {self.auto_send_min_words})")
+            if not text_ok:
+                reason.append("テキスト長不足")
+            
+            main_window = self.parent().parent().parent()
+            if hasattr(main_window, 'conversation_display'):
+                main_window.add_log(f"自動送信見送り: {', '.join(reason)}", "debug")
+    
+    def execute_auto_send(self):
+        """自動送信を実行（即座送信のため基本的に使用されない）"""
+        # 即座送信に変更したため、このメソッドは基本的に使用されない
+        pass
+    
+    def cancel_auto_send(self):
+        """自動送信をキャンセル（即座送信のため基本的に使用されない）"""
+        # 即座送信に変更したため、このメソッドは基本的に使用されない
+        pass
+    
+    def toggle_auto_send(self, state):
+        """自動送信機能の有効/無効を切り替え"""
+        self.auto_send_enabled = bool(state)
+        
+        # 設定変更をログに記録
+        main_window = self.parent().parent().parent()
+        if hasattr(main_window, 'conversation_display'):
+            status = "有効" if self.auto_send_enabled else "無効"
+            main_window.add_log(f"自動送信機能を{status}にしました", "info")
+            main_window.conversation_display.add_system_message(
+                f"🔧 自動送信機能: {status} (精度閾値: {self.auto_send_threshold}%以上)", 
+                "info"
+            )
 
 class StatusPanel(QWidget):
     """ステータスパネルウィジェット"""
@@ -1405,8 +1698,24 @@ class StatusPanel(QWidget):
             }
         """)
         
+        # 精度表示ラベル
+        self.confidence_label = QLabel("精度: --")
+        self.confidence_label.setStyleSheet("""
+            QLabel {
+                color: #64B5F6;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 2px 6px;
+                border: 1px solid #444;
+                border-radius: 3px;
+                background-color: #333;
+            }
+        """)
+        self.confidence_label.setVisible(False)
+        
         layout.addWidget(self.status_label)
         layout.addWidget(self.progress_bar)
+        layout.addWidget(self.confidence_label)
         layout.addStretch()
         
         self.setLayout(layout)
@@ -1417,6 +1726,34 @@ class StatusPanel(QWidget):
         self.progress_bar.setVisible(progress)
         if progress:
             self.progress_bar.setRange(0, 0)  # 無限プログレス
+    
+    def update_confidence(self, confidence: float, show: bool = True):
+        """認識精度を更新"""
+        if show and confidence > 0:
+            self.confidence_label.setText(f"精度: {confidence:.1f}%")
+            
+            # 精度に応じて色を変更
+            if confidence >= 80:
+                color = "#4CAF50"  # 緑
+            elif confidence >= 60:
+                color = "#FF9800"  # オレンジ
+            else:
+                color = "#F44336"  # 赤
+            
+            self.confidence_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {color};
+                    font-weight: bold;
+                    font-size: 11px;
+                    padding: 2px 6px;
+                    border: 1px solid {color};
+                    border-radius: 3px;
+                    background-color: #333;
+                }}
+            """)
+            self.confidence_label.setVisible(True)
+        else:
+            self.confidence_label.setVisible(False)
 
 class SiriusFaceAnimUI(QMainWindow):
     """メインUIウィンドウ"""
@@ -1442,7 +1779,7 @@ class SiriusFaceAnimUI(QMainWindow):
     
     def init_ui(self):
         """UIを初期化"""
-        self.setWindowTitle("シリウス音声対話システム")
+        self.setWindowTitle("おしゃべりシリウスくん")
         self.setGeometry(100, 100, 800, 500)  # 600から500に縮小
         
         # メインウィジェット
@@ -1461,7 +1798,7 @@ class SiriusFaceAnimUI(QMainWindow):
         main_layout.setSpacing(5)  # 間隔を縮小
         
         # ヘッダー（コンパクト化）
-        header = QLabel("🤖 シリウス音声対話システム")
+        header = QLabel("🤖 おしゃべりシリウスくん")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header.setStyleSheet("""
             QLabel {
@@ -1536,11 +1873,11 @@ class SiriusFaceAnimUI(QMainWindow):
         main_widget.setLayout(main_layout)
         
         # 初期メッセージ
-        self.conversation_display.add_system_message("シリウス音声対話システムが起動しました", "success")
-        self.conversation_display.add_system_message("💡 使い方:\n• Cmd+Enter (macOS) / Ctrl+Enter (Windows) で送信\n• Escキーで入力欄をクリア\n• 「履歴クリア」ボタンで会話履歴をクリア\n• ログタブで詳細な処理状況を確認", "info")
+        self.conversation_display.add_system_message("おしゃべりシリウスくんが起動しました", "success")
+        self.conversation_display.add_system_message("💡 使い方:\n• Cmd+Enter (macOS) / Ctrl+Enter (Windows) で送信\n• Vキーで音声入力開始/停止\n• Escキーで入力欄をクリア\n• 「履歴クリア」ボタンで会話履歴をクリア\n• ログタブで詳細な処理状況を確認", "info")
         
         # 初期ログ
-        self.add_log("シリウス音声対話システム起動完了", "success")
+        self.add_log("おしゃべり起動完了", "success")
         self.add_log("LLMFaceController初期化完了", "info")
         
         # プロンプト一覧を初期化
@@ -1564,11 +1901,25 @@ class SiriusFaceAnimUI(QMainWindow):
     def init_connections(self):
         """シグナル・スロット接続を初期化"""
         self.input_panel.send_message.connect(self.handle_user_message)
+        # 音声認識の信頼度情報を処理
+        self.input_panel.voice_recorder.transcription_with_confidence.connect(self.handle_confidence_update)
     
     def add_log(self, message: str, log_type: str = "info"):
         """ログメッセージを追加"""
         if hasattr(self, 'log_display'):
             self.log_display.add_log(message, log_type)
+    
+    def handle_confidence_update(self, text: str, confidence_info: dict):
+        """音声認識の信頼度情報を処理"""
+        # ステータスパネルに精度を表示
+        if hasattr(self, 'status_panel'):
+            self.status_panel.update_confidence(confidence_info['overall_confidence'], True)
+        
+        # 詳細ログに統計情報を追加
+        self.add_log(f"認識精度詳細: 全体={confidence_info['overall_confidence']:.1f}%, "
+                    f"範囲={confidence_info['min_confidence']:.1f}%-{confidence_info['max_confidence']:.1f}%, "
+                    f"標準偏差={confidence_info['std_confidence']:.1f}%, "
+                    f"言語確率={confidence_info['language_probability']:.1f}%", "debug")
     
     def handle_user_message(self, message: str, expression: str, model_setting: str, prompt: str):
         """ユーザーメッセージを処理"""
@@ -1681,6 +2032,19 @@ class SiriusFaceAnimUI(QMainWindow):
                     voice_recorder.quit()
                     voice_recorder.wait(1000)  # さらに1秒待機
     
+    def keyPressEvent(self, event):
+        """キーボードイベント処理"""
+        # Vキーで音声入力開始/停止（フォーカスに関係なく動作）
+        if event.key() == Qt.Key.Key_V and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            # 入力フィールドにフォーカスがない場合のみ処理
+            if not self.input_panel.message_input.hasFocus():
+                self.input_panel.toggle_voice_recording()
+                event.accept()
+                return
+        
+        # その他のキーイベントは親クラスに委譲
+        super().keyPressEvent(event)
+    
     def closeEvent(self, event):
         """ウィンドウクローズ時の処理"""
         try:
@@ -1707,7 +2071,7 @@ def main():
     app = QApplication(sys.argv)
     
     # アプリケーション設定
-    app.setApplicationName("シリウス音声対話システム")
+    app.setApplicationName("おしゃべりシリウス")
     app.setApplicationVersion("1.0.0")
     
     # スタイル設定
