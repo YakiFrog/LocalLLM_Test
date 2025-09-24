@@ -834,7 +834,7 @@ class InputPanel(QWidget):
         
         # 自動送信設定
         self.auto_send_enabled = True  # 自動送信を有効にするかどうか
-        self.auto_send_threshold = 80.0  # 自動送信する精度の閾値（%）
+        self.auto_send_threshold = 90.0  # 自動送信する精度の閾値（%）
         self.auto_send_min_words = 2  # 自動送信する最小単語数
         
         self.init_ui()
