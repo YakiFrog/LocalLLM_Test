@@ -61,6 +61,16 @@ class VoiceRecorder(QThread):
             'max_confidence': 0.0
         }
         
+        # 音声自動終了機能
+        self.silence_detection_enabled = True  # 沈黙検出機能を有効にするかどうか
+        self.silence_threshold = 2.0  # 沈黙検出の閾値（秒）
+        self.silence_timer = QTimer()  # 沈黙検出用タイマー
+        self.silence_timer.setSingleShot(True)
+        self.silence_timer.timeout.connect(self.on_silence_detected)
+        self.last_voice_time = 0  # 最後に音声が検出された時刻
+        self.voice_threshold = 1000  # 音声レベルの閾値
+        self.auto_stopped_by_silence = False  # 沈黙検出による自動停止フラグ
+        
         # Whisperモデル（選択されたモデルを使用）
         self.load_whisper_model(model_name)
     
@@ -136,11 +146,16 @@ class VoiceRecorder(QThread):
         if not self.is_recording:
             self.is_recording = True
             self.audio_data = []
+            self.auto_stopped_by_silence = False  # フラグをリセット
             self.start()
     
     def stop_recording(self):
         """録音停止"""
         self.is_recording = False
+        
+        # 沈黙検出タイマーを停止
+        if hasattr(self, 'silence_timer') and self.silence_timer.isActive():
+            self.silence_timer.stop()
     
     def run(self):
         """録音処理実行"""
@@ -160,11 +175,21 @@ class VoiceRecorder(QThread):
             
             self.recording_started.emit()
             
+            # 沈黙検出の初期化
+            import time
+            self.last_voice_time = time.time()
+            self.has_detected_voice = False  # 音声が検出されたかどうか
+            
             # 録音ループ
             while self.is_recording:
                 try:
                     data = stream.read(self.chunk_size, exception_on_overflow=False)
                     self.audio_data.append(data)
+                    
+                    # 音声レベル検出（沈黙検出用）
+                    if self.silence_detection_enabled:
+                        self.detect_voice_activity(data)
+                    
                 except Exception as e:
                     print(f"録音エラー: {e}")
                     break
@@ -374,6 +399,53 @@ class VoiceRecorder(QThread):
     def get_recognition_stats(self):
         """認識統計を取得"""
         return self.recognition_stats.copy(), self.confidence_history.copy()
+    
+    def detect_voice_activity(self, audio_data):
+        """音声活動を検出し、沈黙時間を監視"""
+        import numpy as np
+        import time
+        
+        try:
+            # 音声データをnumpy配列に変換
+            audio_array = np.frombuffer(audio_data, dtype=np.int16)
+            
+            # RMS（Root Mean Square）で音声レベルを計算
+            rms = np.sqrt(np.mean(audio_array.astype(np.float64) ** 2))
+            
+            current_time = time.time()
+            
+            # 音声が検出された場合
+            if rms > self.voice_threshold:
+                self.last_voice_time = current_time
+                self.has_detected_voice = True
+                
+                # 沈黙タイマーをリセット
+                if self.silence_timer.isActive():
+                    self.silence_timer.stop()
+            
+            # 音声が検出されてから一定時間が経過し、沈黙が続いている場合
+            elif self.has_detected_voice:
+                silence_duration = current_time - self.last_voice_time
+                
+                # 沈黙検出タイマーを開始（まだ開始していない場合）
+                if not self.silence_timer.isActive() and silence_duration >= 0.5:  # 0.5秒の遅延後に開始
+                    remaining_time = max(0, self.silence_threshold - silence_duration)
+                    if remaining_time > 0:
+                        self.silence_timer.start(int(remaining_time * 1000))  # ミリ秒で指定
+                    else:
+                        # 既に閾値を超えている場合は即座に沈黙検出
+                        self.on_silence_detected()
+        
+        except Exception as e:
+            print(f"音声活動検出エラー: {e}")
+    
+    def on_silence_detected(self):
+        """沈黙が検出された時の処理"""
+        if self.is_recording and self.has_detected_voice:
+            print("🔇 沈黙検出により自動録音終了")
+            # 沈黙検出による自動終了フラグを設定
+            self.auto_stopped_by_silence = True
+            self.stop_recording()
 
 class ConversationWorker(QThread):
     """会話処理用ワーカースレッド"""
@@ -1198,6 +1270,39 @@ class InputPanel(QWidget):
         self.auto_send_checkbox.stateChanged.connect(self.toggle_auto_send)
         auto_send_layout.addWidget(self.auto_send_checkbox)
         
+        # 沈黙検出設定（コンパクト）
+        silence_layout = QVBoxLayout()
+        silence_layout.setSpacing(2)
+        silence_label = QLabel("沈黙検出:")
+        silence_label.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 12px;")
+        silence_layout.addWidget(silence_label)
+        
+        self.silence_checkbox = QCheckBox("有効")
+        self.silence_checkbox.setChecked(True)  # デフォルトで有効
+        self.silence_checkbox.setMaximumHeight(28)
+        self.silence_checkbox.setStyleSheet("""
+            QCheckBox {
+                color: #ffffff;
+                font-size: 11px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QCheckBox::indicator:unchecked {
+                background-color: #2b2b2b;
+                border: 1px solid #555;
+                border-radius: 3px;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #2196F3;
+                border: 1px solid #2196F3;
+                border-radius: 3px;
+            }
+        """)
+        self.silence_checkbox.stateChanged.connect(self.toggle_silence_detection)
+        silence_layout.addWidget(self.silence_checkbox)
+        
         # すべての設定を水平に配置
         settings_layout.addLayout(expression_layout)
         settings_layout.addLayout(whisper_layout)
@@ -1205,6 +1310,7 @@ class InputPanel(QWidget):
         settings_layout.addLayout(model_layout)
         settings_layout.addLayout(prompt_layout)
         settings_layout.addLayout(auto_send_layout)
+        settings_layout.addLayout(silence_layout)
         settings_layout.addStretch()  # 右側に余白を追加
         
         settings_group.setLayout(settings_layout)
@@ -1417,6 +1523,9 @@ class InputPanel(QWidget):
             self.voice_recorder.transcription_with_confidence.connect(self.on_transcription_with_confidence)
             self.voice_recorder.error_occurred.connect(self.on_voice_error)
             
+            # 沈黙検出設定を引き継ぎ
+            self.voice_recorder.silence_detection_enabled = self.silence_checkbox.isChecked()
+            
             # 古いレコーダーをクリーンアップ
             if old_recorder.isRunning():
                 old_recorder.quit()
@@ -1450,6 +1559,9 @@ class InputPanel(QWidget):
             self.voice_recorder.transcription_ready.connect(self.on_transcription_ready)
             self.voice_recorder.transcription_with_confidence.connect(self.on_transcription_with_confidence)
             self.voice_recorder.error_occurred.connect(self.on_voice_error)
+            
+            # 沈黙検出設定を引き継ぎ
+            self.voice_recorder.silence_detection_enabled = self.silence_checkbox.isChecked()
             
             # 古いレコーダーをクリーンアップ
             if old_recorder.isRunning():
@@ -1525,7 +1637,8 @@ class InputPanel(QWidget):
         main_window = self.parent().parent().parent()
         if hasattr(main_window, 'conversation_display'):
             main_window.conversation_display.add_system_message("🔄 音声を認識中...", "warning")
-            main_window.add_log("音声録音停止 - 認識処理開始", "info")
+            silence_status = "有効" if self.voice_recorder.silence_detection_enabled else "無効"
+            main_window.add_log(f"音声録音停止 - 認識処理開始 (沈黙検出: {silence_status})", "info")
     
     def on_transcription_ready(self, text: str):
         """音声認識完了時の処理"""
@@ -1617,7 +1730,11 @@ class InputPanel(QWidget):
             # 高精度認識時は即座に自動送信
             main_window = self.parent().parent().parent()
             if hasattr(main_window, 'conversation_display'):
-                main_window.add_log(f"高精度認識 ({confidence_info['overall_confidence']:.1f}%) - 自動送信実行", "success")
+                # 沈黙検出による自動終了の場合のメッセージ
+                if hasattr(main_window.voice_recorder, 'auto_stopped_by_silence') and main_window.voice_recorder.auto_stopped_by_silence:
+                    main_window.add_log(f"沈黙検出→自動送信 ({confidence_info['overall_confidence']:.1f}%) - 完全自動化", "success")
+                else:
+                    main_window.add_log(f"高精度認識 ({confidence_info['overall_confidence']:.1f}%) - 自動送信実行", "success")
             
             # 即座に送信処理を実行
             self.send_message_clicked()
@@ -1656,6 +1773,21 @@ class InputPanel(QWidget):
             main_window.add_log(f"自動送信機能を{status}にしました", "info")
             main_window.conversation_display.add_system_message(
                 f"🔧 自動送信機能: {status} (精度閾値: {self.auto_send_threshold}%以上)", 
+                "info"
+            )
+    
+    def toggle_silence_detection(self, state):
+        """沈黙検出機能の有効/無効を切り替え"""
+        enabled = bool(state)
+        self.voice_recorder.silence_detection_enabled = enabled
+        
+        # 設定変更をログに記録
+        main_window = self.parent().parent().parent()
+        if hasattr(main_window, 'conversation_display'):
+            status = "有効" if enabled else "無効"
+            main_window.add_log(f"沈黙検出機能を{status}にしました", "info")
+            main_window.conversation_display.add_system_message(
+                f"🔇 沈黙検出機能: {status} (閾値: {self.voice_recorder.silence_threshold}秒)", 
                 "info"
             )
 
@@ -1874,7 +2006,7 @@ class SiriusFaceAnimUI(QMainWindow):
         
         # 初期メッセージ
         self.conversation_display.add_system_message("おしゃべりシリウスくんが起動しました", "success")
-        self.conversation_display.add_system_message("💡 使い方:\n• Cmd+Enter (macOS) / Ctrl+Enter (Windows) で送信\n• Vキーで音声入力開始/停止\n• Escキーで入力欄をクリア\n• 「履歴クリア」ボタンで会話履歴をクリア\n• ログタブで詳細な処理状況を確認", "info")
+        self.conversation_display.add_system_message("💡 使い方:\n• Cmd+Enter (macOS) / Ctrl+Enter (Windows) で送信\n• Vキーで音声入力開始/停止\n• 2秒間の沈黙で自動録音終了（設定で切替可能）\n• Escキーで入力欄をクリア\n• 「履歴クリア」ボタンで会話履歴をクリア\n• ログタブで詳細な処理状況を確認", "info")
         
         # 初期ログ
         self.add_log("おしゃべり起動完了", "success")
