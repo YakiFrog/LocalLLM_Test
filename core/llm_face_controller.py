@@ -9,6 +9,7 @@ import sys
 import os
 import json
 import logging
+import time
 from typing import Optional, Dict, Any
 from pathlib import Path
 
@@ -284,7 +285,7 @@ class LLMFaceController:
     
     async def speak_with_lipsync(self, text: str, style_id: Optional[int] = None, enable_expression_parsing: bool = True) -> bool:
         """
-        AudioQuery音韻解析を使用して音声合成とリップシンクを実行
+        AudioQuery音韻解析を使用して音声合成とリップシンクを実行（高速化版）
         
         Args:
             text: 話すテキスト
@@ -303,15 +304,16 @@ class LLMFaceController:
             return False
 
         try:
+            start_time = time.time()
             self.is_speaking = True
-            logger.info(f"音声合成開始: {text[:30]}...")
+            logger.info(f"🚀 音声合成開始: {text[:30]}...")
             
             # 表情タグが含まれているかチェック
             if enable_expression_parsing and self.realtime_expression_controller:
                 has_expression_tags = '<' in text and '>' in text and '</' in text
                 
                 if has_expression_tags:
-                    logger.info("表情タグを検出、リアルタイム表情制御で発話します")
+                    logger.info("🎭 表情タグを検出、リアルタイム表情制御で発話します")
                     
                     # 表情タグを解析
                     segments = self.expression_parser.parse_expression_text(text)
@@ -320,54 +322,55 @@ class LLMFaceController:
                     logger.info(f"クリーンテキスト: {clean_text}")
                     logger.info(f"表情セグメント数: {len(segments)}")
                     
-                    # タイムアウト付きでリアルタイム表情制御を実行（30秒）
+                    # ⚡ タイムアウト短縮（30→20秒）とキャンセレーション対応
                     try:
                         success = await asyncio.wait_for(
                             self.realtime_expression_controller.speak_with_dynamic_expressions(
                                 text, "neutral"
                             ),
-                            timeout=30.0
+                            timeout=20.0  # 30→20秒に短縮
                         )
                     except asyncio.TimeoutError:
-                        logger.error("リアルタイム表情制御がタイムアウトしました（30秒）")
+                        logger.error("❌ リアルタイム表情制御がタイムアウトしました（20秒）")
                         success = False
                 else:
-                    logger.info("表情タグなし、通常の発話を実行します")
-                    # タイムアウト付きで通常の音声合成を実行（20秒）
+                    logger.info("🎵 表情タグなし、通常の発話を実行します")
+                    # ⚡ タイムアウト短縮（20→15秒）
                     try:
                         success = await asyncio.wait_for(
                             self.voice_controller.speak_with_audioquery_lipsync(text, style_id),
-                            timeout=20.0
+                            timeout=15.0  # 20→15秒に短縮
                         )
                     except asyncio.TimeoutError:
-                        logger.error("音声合成がタイムアウトしました（20秒）")
+                        logger.error("❌ 音声合成がタイムアウトしました（15秒）")
                         success = False
             else:
                 # 通常のAudioQuery音韻解析による発話
-                logger.info("通常の発話を実行します")
-                # タイムアウト付きで音声合成を実行（20秒）
+                logger.info("🎵 通常の発話を実行します")
+                # ⚡ タイムアウト短縮（20→15秒）
                 try:
                     success = await asyncio.wait_for(
                         self.voice_controller.speak_with_audioquery_lipsync(text, style_id),
-                        timeout=20.0
+                        timeout=15.0  # 20→15秒に短縮
                     )
                 except asyncio.TimeoutError:
-                    logger.error("音声合成がタイムアウトしました（20秒）")
+                    logger.error("❌ 音声合成がタイムアウトしました（15秒）")
                     success = False
             
+            elapsed_time = time.time() - start_time
             if success:
-                logger.info("音声合成完了")
+                logger.info(f"✅ 音声合成完了 ({elapsed_time:.2f}秒)")
             else:
-                logger.error("音声合成失敗")
+                logger.error(f"❌ 音声合成失敗 ({elapsed_time:.2f}秒)")
             
             return success
             
         except Exception as e:
-            logger.error(f"音声合成エラー: {e}")
+            logger.error(f"❌ 音声合成エラー: {e}")
             return False
         finally:
             self.is_speaking = False
-            logger.info("音声合成処理終了、is_speakingフラグをリセット")
+            logger.debug("音声合成処理終了、is_speakingフラグをリセット")
     
     def set_expression(self, expression: str) -> bool:
         """
@@ -414,18 +417,18 @@ class LLMFaceController:
             if expression:
                 result["expression_success"] = self.set_expression(expression)
             
-            # 2. LLM応答取得（タイムアウト: 30秒）
-            logger.info(f"ユーザー入力処理開始: {user_message[:30]}...")
+            # 2. LLM応答取得（タイムアウト短縮: 30→20秒）
+            logger.info(f"🤖 ユーザー入力処理開始: {user_message[:30]}...")
             try:
                 # LLM応答取得を非同期化してタイムアウト処理
                 loop = asyncio.get_event_loop()
                 llm_response = await asyncio.wait_for(
                     loop.run_in_executor(None, self.get_llm_response, user_message),
-                    timeout=30.0
+                    timeout=20.0  # 30→20秒に短縮
                 )
             except asyncio.TimeoutError:
-                result["error"] = "LLM応答がタイムアウトしました（30秒）"
-                logger.error("LLM応答がタイムアウトしました（30秒）")
+                result["error"] = "LLM応答がタイムアウトしました（20秒）"
+                logger.error("❌ LLM応答がタイムアウトしました（20秒）")
                 return result
             
             if not llm_response:

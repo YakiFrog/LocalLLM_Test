@@ -12,6 +12,7 @@ import tempfile
 import os
 import threading
 import time
+import logging
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -32,6 +33,9 @@ from faster_whisper import WhisperModel
 # LLM Face Controllerのインポート
 sys.path.append('/Users/kotaniryota/NLAB/LocalLLM_Test/core')
 from llm_face_controller import LLMFaceController
+
+# ログ設定
+logger = logging.getLogger(__name__)
 
 class VoiceRecorder(QThread):
     """音声録音・認識処理用スレッド"""
@@ -720,25 +724,29 @@ class ConversationWorker(QThread):
                 self.progress_update.emit("プロンプト設定を変更中...")
                 self.controller.set_prompt(self.prompt)
                 
-                # タイムアウト設定（60秒）
-                self.progress_update.emit("LLM応答処理中...")
+                # ⚡ タイムアウト短縮と高速化（60秒→40秒）
+                self.progress_update.emit("🚀 LLM応答処理中...")
                 
                 try:
+                    start_time = time.time()
                     result = loop.run_until_complete(
                         asyncio.wait_for(
                             self.controller.process_user_input(self.user_message, self.expression),
-                            timeout=60.0
+                            timeout=40.0  # 60→40秒に短縮
                         )
                     )
+                    elapsed_time = time.time() - start_time
+                    logger.info(f"⚡ 対話処理時間: {elapsed_time:.2f}秒")
+                    
                 except asyncio.TimeoutError:
-                    self.progress_update.emit("タイムアウトエラー - 処理を中断中...")
+                    self.progress_update.emit("⚠️ タイムアウトエラー（40秒）")
                     result = {
                         "success": False,
                         "user_message": self.user_message,
                         "llm_response": None,
                         "voice_success": False,
                         "expression_success": False,
-                        "error": "処理がタイムアウトしました（60秒）。音声合成または表情制御に問題がある可能性があります。"
+                        "error": "処理がタイムアウトしました（40秒）。音声合成または表情制御に問題がある可能性があります。"
                     }
                 
                 # スレッドが中断されていないかチェック
