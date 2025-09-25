@@ -307,12 +307,6 @@ class VoiceRecorder(QThread):
             # 一時ファイルを削除
             try:
                 os.unlink(temp_filename)
-                # リサンプリングファイルが作成されていれば削除
-                if resample_filename and resample_filename != temp_filename:
-                    try:
-                        os.unlink(resample_filename)
-                    except:
-                        pass
             except:
                 pass
                 
@@ -1139,8 +1133,8 @@ class InputPanel(QWidget):
         
         # 自動送信設定
         self.auto_send_enabled = True  # 自動送信を有効にするかどうか
-        self.auto_send_threshold = 80.0  # 自動送信する精度の閾値（%）- confidence_thresholdと統一
-        self.auto_send_min_words = 2  # 自動送信する最小単語数
+        self.auto_send_threshold = 90.0  # 自動送信する精度の閾値（%）- 高精度設定
+        self.auto_send_min_words = 1  # 自動送信する最小単語数 - より緩い設定に変更
         
         self.init_ui()
     
@@ -1478,7 +1472,7 @@ class InputPanel(QWidget):
         auto_send_layout.addWidget(auto_send_label)
         
         self.auto_send_checkbox = QCheckBox("有効")
-        self.auto_send_checkbox.setChecked(self.auto_send_enabled)
+        self.auto_send_checkbox.setChecked(True)  # デフォルトで有効に設定
         self.auto_send_checkbox.setMaximumHeight(28)
         self.auto_send_checkbox.setStyleSheet("""
             QCheckBox {
@@ -1995,8 +1989,15 @@ class InputPanel(QWidget):
         print(f"  - 単語数: {confidence_info['word_count']} (最小: {self.auto_send_min_words})")
         print(f"  - テキスト: '{text.strip()}' (長さ: {len(text.strip())})")
         
+        # 設定状況をメインウィンドウのログにも出力
+        main_window = self.parent().parent().parent()
+        if hasattr(main_window, 'add_log'):
+            main_window.add_log(f"🔍 自動送信判定: 有効={self.auto_send_enabled}, 精度={confidence_info['overall_confidence']:.1f}%/{self.auto_send_threshold}%", "debug")
+        
         if not self.auto_send_enabled:
             print("❌ 自動送信が無効のため送信しません")
+            if hasattr(main_window, 'add_log'):
+                main_window.add_log("❌ 自動送信無効", "warning")
             return
         
         # 自動送信の条件をチェック
@@ -2009,21 +2010,35 @@ class InputPanel(QWidget):
         print(f"  - 単語数OK: {word_count_ok} ({confidence_info['word_count']} >= {self.auto_send_min_words})")
         print(f"  - テキストOK: {text_ok} (長さ {len(text.strip())} > 1)")
         
+        # ログにも条件チェック結果を出力
+        if hasattr(main_window, 'add_log'):
+            main_window.add_log(f"📊 条件: 精度{confidence_ok}, 単語数{word_count_ok}, 文字{text_ok}", "debug")
+        
         if confidence_ok and word_count_ok and text_ok:
             print("✅ 自動送信条件をすべて満たしました - 送信実行中...")
-            # 高精度認識時は即座に自動送信
-            main_window = self.parent().parent().parent()
-            if hasattr(main_window, 'conversation_display'):
+            if hasattr(main_window, 'add_log'):
                 # 沈黙検出による自動終了の場合のメッセージ
-                if hasattr(main_window.voice_recorder, 'auto_stopped_by_silence') and main_window.voice_recorder.auto_stopped_by_silence:
-                    main_window.add_log(f"沈黙検出→自動送信 ({confidence_info['overall_confidence']:.1f}%) - 完全自動化", "success")
+                if hasattr(self.voice_recorder, 'auto_stopped_by_silence') and self.voice_recorder.auto_stopped_by_silence:
+                    main_window.add_log(f"🔇→📤 沈黙検出による自動送信 ({confidence_info['overall_confidence']:.1f}%)", "success")
                 else:
-                    main_window.add_log(f"高精度認識 ({confidence_info['overall_confidence']:.1f}%) - 自動送信実行", "success")
+                    main_window.add_log(f"📤 高精度認識による自動送信 ({confidence_info['overall_confidence']:.1f}%)", "success")
             
-            # 即座に送信処理を実行
+            # より確実な自動送信の実行
             print("📤 send_message_clicked()を実行します")
-            self.send_message_clicked()
-            print("✅ 自動送信処理完了")
+            
+            # 入力欄の内容を確認
+            current_text = self.message_input.toPlainText().strip()
+            print(f"📝 送信前の入力欄確認: '{current_text}'")
+            
+            if current_text:
+                self.send_message_clicked()
+                print("✅ 自動送信処理完了")
+                if hasattr(main_window, 'add_log'):
+                    main_window.add_log("✅ 自動送信実行完了", "success")
+            else:
+                print("❌ 入力欄が空のため送信できません")
+                if hasattr(main_window, 'add_log'):
+                    main_window.add_log("❌ 自動送信失敗: 入力欄が空", "error")
         else:
             # 自動送信の条件を満たさない場合の理由表示
             reason = []
@@ -2036,9 +2051,8 @@ class InputPanel(QWidget):
             
             print(f"❌ 自動送信見送り: {', '.join(reason)}")
             
-            main_window = self.parent().parent().parent()
-            if hasattr(main_window, 'conversation_display'):
-                main_window.add_log(f"自動送信見送り: {', '.join(reason)}", "debug")
+            if hasattr(main_window, 'add_log'):
+                main_window.add_log(f"❌ 自動送信見送り: {', '.join(reason)}", "warning")
     
     def execute_auto_send(self):
         """自動送信を実行（即座送信のため基本的に使用されない）"""
@@ -2367,9 +2381,14 @@ class SiriusFaceAnimUI(QMainWindow):
         self.conversation_display.add_system_message("おしゃべりシリウスくんが起動しました", "success")
         self.conversation_display.add_system_message("💡 使い方:\n• Cmd+Enter (macOS) / Ctrl+Enter (Windows) で送信\n• Vキーで音声入力開始/停止\n• 2秒間の沈黙で自動録音終了（設定で切替可能）\n• Escキーで入力欄をクリア\n• 「履歴クリア」ボタンで会話履歴をクリア\n• ログタブで詳細な処理状況を確認", "info")
         
+        # 自動送信設定を表示
+        auto_send_status = "有効" if self.input_panel.auto_send_enabled else "無効"
+        self.conversation_display.add_system_message(f"🔧 自動送信機能: {auto_send_status} (精度閾値: {self.input_panel.auto_send_threshold}%以上、単語数: {self.input_panel.auto_send_min_words}語以上)", "info")
+        
         # 初期ログ
         self.add_log("おしゃべり起動完了", "success")
         self.add_log("LLMFaceController初期化完了", "info")
+        self.add_log(f"自動送信設定: {auto_send_status}, 精度閾値={self.input_panel.auto_send_threshold}%, 最小単語数={self.input_panel.auto_send_min_words}", "info")
         
         # プロンプト一覧を初期化
         self.update_prompt_list()
