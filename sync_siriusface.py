@@ -47,12 +47,12 @@ class VoiceRecorder(QThread):
         self.is_recording = False
         self.audio_data = []
         # 音声品質設定（日本語音声認識に最適化・高品質）
-        self.sample_rate = 16000        # Whisper推奨サンプルレート
+        self.sample_rate = 48000        # マイクのネイティブサンプルレートを使用
         self.chunk_size = 1024          # バッファサイズ
         self.channels = 1               # モノラル録音
         self.format = pyaudio.paInt16   # 16bit PCM
         self.record_seconds_min = 1.0   # 最小録音時間（秒）
-        self.device_index = device_index  # マイクデバイスインデックス
+        self.device_index = 1 if device_index is None else device_index  # MacBook Airのマイクをデフォルトで使用
         
         # 精度履歴管理
         self.confidence_history = []  # 信頼度履歴
@@ -76,7 +76,11 @@ class VoiceRecorder(QThread):
         # リアルタイム監視設定
         self.real_time_enabled = False  # リアルタイム監視の有効/無効
         self.wake_word_enabled = True  # ウェイクワード検出の有効/無効
-        self.wake_words = ["シリウスくん", "シリウス君", "しりうすくん"]  # 検出するウェイクワード
+        self.wake_words = [
+            "シリウスくん", "シリウス君", "しりうすくん",
+            "シリウス", "しりうす", "シリウスさん",
+            "こんにちは", "おはよう", "起きて"  # より簡単な代替ワード
+        ]  # 検出するウェイクワード
         self.wake_buffer_duration = 3.0  # ウェイクワード検出用バッファ時間（秒）
         self.wake_buffer = []  # ウェイクワード検出用音声バッファ
         self.wake_check_interval = 1.5  # ウェイクワード検出間隔（秒）
@@ -176,10 +180,19 @@ class VoiceRecorder(QThread):
             self.last_wake_check = 0
             print("🔊 リアルタイム音声監視を開始しました")
             print(f"🎯 検出対象ワード: {', '.join(self.wake_words)}")
+            print(f"⚙️ 設定:")
+            print(f"  - バッファ時間: {self.wake_buffer_duration}秒")
+            print(f"  - チェック間隔: {self.wake_check_interval}秒")
+            print(f"  - サンプルレート: {self.sample_rate}Hz")
+            print(f"  - チャンクサイズ: {self.chunk_size}")
+            
             self.real_time_monitoring.emit(True)
             # バックグラウンドで音声監視スレッドを開始
             if not self.isRunning():
+                print("🎵 音声監視スレッドを開始しています...")
                 self.start()
+            else:
+                print("⚠️ 音声監視スレッドは既に実行中です")
     
     def stop_real_time_monitoring(self):
         """リアルタイム音声監視を停止"""
@@ -200,13 +213,12 @@ class VoiceRecorder(QThread):
         # ウェイクワード検出用バッファに音声データを追加
         self.wake_buffer.append(audio_chunk)
         
-        # 音声レベルをチェックしてデバッグ表示（たまに）
-        if len(self.wake_buffer) % 50 == 0:  # 50フレームに1回表示
+        # 音声レベルをチェックしてデバッグ表示（監視が動いていることを確認）
+        if len(self.wake_buffer) % 30 == 0:  # 30フレームに1回表示（約2秒ごと）
             import numpy as np
             audio_data = np.frombuffer(audio_chunk, dtype=np.int16)
             volume = np.sqrt(np.mean(audio_data**2))
-            if volume > 100:  # 一定レベル以上の音声がある場合のみ表示
-                print(f"🎤 音声レベル: {volume:.0f} (フレーム #{len(self.wake_buffer)})")
+            print(f"� 監視中... フレーム#{len(self.wake_buffer)}, 音声レベル:{volume:.0f} {'🔊' if volume > 200 else '🔇'}")
         
         # バッファサイズを制限（指定時間分のデータのみ保持）
         buffer_frames = int(self.wake_buffer_duration * self.sample_rate / self.chunk_size)
@@ -218,14 +230,28 @@ class VoiceRecorder(QThread):
             self.last_wake_check = current_time
             
             if len(self.wake_buffer) >= buffer_frames // 2:  # 最低限の音声データが蓄積された場合
-                print(f"🔍 ウェイクワード検出を実行中... (バッファサイズ: {len(self.wake_buffer)}フレーム)")
-                return self.process_wake_word_detection()
+                # 音声レベルをチェックしてから認識処理へ
+                import numpy as np
+                recent_audio = b''.join(self.wake_buffer[-10:])  # 最新10フレームをチェック
+                audio_data = np.frombuffer(recent_audio, dtype=np.int16)
+                volume = np.sqrt(np.mean(audio_data**2)) if len(audio_data) > 0 else 0
+                
+                print(f"🔍 ウェイクワード検出を実行中... (バッファ:{len(self.wake_buffer)}, 音声レベル:{volume:.0f})")
+                
+                # 音声がある程度のレベル以上の場合のみ認識処理を実行
+                if volume > 20:  # 音声レベル閾値をさらに下げて高感度に (80 -> 20)
+                    print(f"🎤 音声レベル{volume:.0f}で認識処理開始")
+                    return self.process_wake_word_detection()
+                else:
+                    print(f"🔇 音声レベルが低いため認識をスキップ (レベル:{volume:.0f} < 20)")
         
         return False
     
     def process_wake_word_detection(self):
         """蓄積された音声データでウェイクワード検出を実行"""
         try:
+            print(f"🎯 ウェイクワード検出処理を開始 (バッファサイズ: {len(self.wake_buffer)}フレーム)")
+            
             # バッファの音声データを一時ファイルに保存
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
                 temp_filename = temp_file.name
@@ -236,14 +262,19 @@ class VoiceRecorder(QThread):
                     wf.setframerate(self.sample_rate)
                     wf.writeframes(b''.join(self.wake_buffer))
             
+            print(f"📁 音声データを一時ファイルに保存: {temp_filename}")
+            
             # 短時間音声認識（低精度でも高速）
             if self.whisper_model:
+                print("🔊 Whisperによる音声認識を開始...")
                 segments, info = self.whisper_model.transcribe(
                     temp_filename,
                     language="ja",
-                    beam_size=1,  # 高速化のため
-                    temperature=0.2,
-                    no_speech_threshold=0.8  # 音声なしの判定を緩く
+                    beam_size=3,  # ビームサーチを増やして精度向上 (1 -> 3)
+                    temperature=0.0,  # より確定的な結果を得る (0.2 -> 0.0)
+                    no_speech_threshold=0.2,  # 音声なしの判定をさらに緩く (0.8 -> 0.2)
+                    condition_on_previous_text=False,  # 前のテキストに依存しない
+                    word_timestamps=False  # 単語タイムスタンプは不要
                 )
                 
                 # 認識結果からウェイクワードを検索
@@ -276,6 +307,12 @@ class VoiceRecorder(QThread):
             # 一時ファイルを削除
             try:
                 os.unlink(temp_filename)
+                # リサンプリングファイルが作成されていれば削除
+                if resample_filename and resample_filename != temp_filename:
+                    try:
+                        os.unlink(resample_filename)
+                    except:
+                        pass
             except:
                 pass
                 
@@ -323,7 +360,11 @@ class VoiceRecorder(QThread):
             if self.is_recording:
                 self.recording_started.emit()
             elif self.real_time_enabled:
-                print("🔊 リアルタイム音声監視を開始します...")
+                print("🎵 リアルタイム音声監視を開始します...")
+                print("💡 マイクに向かって話してください")
+            else:
+                print("❌ 録音もリアルタイム監視も無効です")
+                return
             
             # 沈黙検出の初期化
             import time
@@ -331,7 +372,14 @@ class VoiceRecorder(QThread):
             self.has_detected_voice = False  # 音声が検出されたかどうか
             
             # 録音ループ（通常録音とリアルタイム監視の両方に対応）
+            loop_count = 0
             while self.is_recording or self.real_time_enabled:
+                loop_count += 1
+                
+                # 100ループごとに状態を報告
+                if loop_count % 100 == 0 and self.real_time_enabled and not self.is_recording:
+                    print(f"📊 監視継続中 - ループ#{loop_count}, リアルタイム監視:{self.real_time_enabled}")
+                
                 try:
                     data = stream.read(self.chunk_size, exception_on_overflow=False)
                     
@@ -370,6 +418,8 @@ class VoiceRecorder(QThread):
     
     def process_audio(self):
         """音声データを処理してテキストに変換"""
+        resample_filename = None  # リサンプリング用ファイル名を初期化
+        
         try:
             # 録音時間をチェック
             total_frames = len(self.audio_data) * self.chunk_size
@@ -408,6 +458,29 @@ class VoiceRecorder(QThread):
                     
                     wf.writeframes(audio_bytes)
             
+            # Whisperは16kHzを推奨するため、48kHzで録音した場合はリサンプリング
+            final_temp_filename = temp_filename
+            resample_filename = None
+            
+            if self.sample_rate != 16000:
+                print(f"🔄 音声データを{self.sample_rate}Hzから16000Hzにリサンプリング中...")
+                try:
+                    import librosa
+                    # リサンプリング用の一時ファイルを作成
+                    with tempfile.NamedTemporaryFile(suffix="_16k.wav", delete=False) as resample_file:
+                        resample_filename = resample_file.name
+                    
+                    # librosaでリサンプリング
+                    y, sr = librosa.load(temp_filename, sr=16000)
+                    import soundfile as sf
+                    sf.write(resample_filename, y, 16000)
+                    final_temp_filename = resample_filename
+                    print("✅ リサンプリング完了")
+                except ImportError:
+                    print("⚠️  librosaが利用できません。元のサンプルレートで処理します。")
+                except Exception as e:
+                    print(f"⚠️  リサンプリングエラー: {e}。元のサンプルレートで処理します。")
+            
             # Faster-Whisperで音声認識（高精度日本語設定）
             if self.whisper_model:
                 try:
@@ -415,7 +488,7 @@ class VoiceRecorder(QThread):
                     # faster-whisperでは segments と info を返す
                     # 単語レベルの信頼度情報を取得するため word_timestamps=True に変更
                     segments, info = self.whisper_model.transcribe(
-                        temp_filename,
+                        final_temp_filename,  # リサンプリング済みファイルを使用
                         language="ja",              # 日本語指定
                         beam_size=5,                # ビームサーチサイズ（精度向上）
                         temperature=0.0,            # 決定論的出力（精度向上）
@@ -1066,7 +1139,7 @@ class InputPanel(QWidget):
         
         # 自動送信設定
         self.auto_send_enabled = True  # 自動送信を有効にするかどうか
-        self.auto_send_threshold = 90.0  # 自動送信する精度の閾値（%）
+        self.auto_send_threshold = 80.0  # 自動送信する精度の閾値（%）- confidence_thresholdと統一
         self.auto_send_min_words = 2  # 自動送信する最小単語数
         
         self.init_ui()
@@ -1629,12 +1702,25 @@ class InputPanel(QWidget):
     def send_message_clicked(self):
         """送信ボタンクリック処理"""
         message = self.message_input.toPlainText().strip()
+        print(f"📤 send_message_clicked() 実行:")
+        print(f"  - 入力欄の内容: '{message}'")
+        print(f"  - 長さ: {len(message)}")
+        
         if message:
             expression = self.expression_combo.currentText()
             model_setting = self.model_combo.currentText()
             prompt = self.prompt_combo.currentText()
+            
+            print(f"  - 表情: {expression}")
+            print(f"  - モデル: {model_setting}")  
+            print(f"  - プロンプト: {prompt}")
+            print("📤 send_messageシグナルを送信します")
+            
             self.send_message.emit(message, expression, model_setting, prompt)
             self.clear_input()  # 送信後に入力欄をクリア
+            print("✅ メッセージ送信完了、入力欄クリア")
+        else:
+            print("❌ 送信失敗: 入力欄が空です")
     
     def clear_input(self):
         """入力クリア"""
@@ -1835,8 +1921,11 @@ class InputPanel(QWidget):
     
     def on_transcription_with_confidence(self, text: str, confidence_info: dict):
         """信頼度付き音声認識完了時の処理"""
+        print(f"🎤 音声認識結果受信: '{text}' (信頼度: {confidence_info['overall_confidence']:.1f}%)")
+        
         # 基本的な処理は通常の transcription_ready と同じ
-        self.message_input.setText(text)
+        self.message_input.setPlainText(text)  # setTextではなくsetPlainTextを使用
+        print(f"📝 入力欄にテキスト設定完了: '{self.message_input.toPlainText()}'")
         
         # 信頼度情報を含む詳細なログ出力
         main_window = self.parent().parent().parent()
@@ -1900,7 +1989,14 @@ class InputPanel(QWidget):
     
     def auto_send_if_high_confidence(self, text: str, confidence_info: dict):
         """高精度の場合に自動送信を実行"""
+        print(f"🔍 自動送信判定開始:")
+        print(f"  - 自動送信有効: {self.auto_send_enabled}")
+        print(f"  - 認識精度: {confidence_info['overall_confidence']:.1f}% (閾値: {self.auto_send_threshold}%)")
+        print(f"  - 単語数: {confidence_info['word_count']} (最小: {self.auto_send_min_words})")
+        print(f"  - テキスト: '{text.strip()}' (長さ: {len(text.strip())})")
+        
         if not self.auto_send_enabled:
+            print("❌ 自動送信が無効のため送信しません")
             return
         
         # 自動送信の条件をチェック
@@ -1908,7 +2004,13 @@ class InputPanel(QWidget):
         word_count_ok = confidence_info['word_count'] >= self.auto_send_min_words
         text_ok = len(text.strip()) > 1  # 最小文字数チェック
         
+        print(f"📊 条件チェック結果:")
+        print(f"  - 精度OK: {confidence_ok} ({confidence_info['overall_confidence']:.1f}% >= {self.auto_send_threshold}%)")
+        print(f"  - 単語数OK: {word_count_ok} ({confidence_info['word_count']} >= {self.auto_send_min_words})")
+        print(f"  - テキストOK: {text_ok} (長さ {len(text.strip())} > 1)")
+        
         if confidence_ok and word_count_ok and text_ok:
+            print("✅ 自動送信条件をすべて満たしました - 送信実行中...")
             # 高精度認識時は即座に自動送信
             main_window = self.parent().parent().parent()
             if hasattr(main_window, 'conversation_display'):
@@ -1919,7 +2021,9 @@ class InputPanel(QWidget):
                     main_window.add_log(f"高精度認識 ({confidence_info['overall_confidence']:.1f}%) - 自動送信実行", "success")
             
             # 即座に送信処理を実行
+            print("📤 send_message_clicked()を実行します")
             self.send_message_clicked()
+            print("✅ 自動送信処理完了")
         else:
             # 自動送信の条件を満たさない場合の理由表示
             reason = []
@@ -1929,6 +2033,8 @@ class InputPanel(QWidget):
                 reason.append(f"単語数不足({confidence_info['word_count']} < {self.auto_send_min_words})")
             if not text_ok:
                 reason.append("テキスト長不足")
+            
+            print(f"❌ 自動送信見送り: {', '.join(reason)}")
             
             main_window = self.parent().parent().parent()
             if hasattr(main_window, 'conversation_display'):
@@ -2035,6 +2141,9 @@ class InputPanel(QWidget):
             main_window = self.parent().parent().parent()
             if hasattr(main_window, 'add_log'):
                 main_window.add_log("🔊 リアルタイム監視を開始しました - 「シリウスくん」と呼んでください", "success")
+                # 監視状態の詳細情報も表示
+                main_window.add_log(f"🎯 検出対象: {', '.join(self.voice_recorder.wake_words)}", "info")
+                main_window.add_log("💡 音声レベルが表示されれば監視は正常に動作中です", "info")
     
     def start_voice_input(self):
         """音声入力を開始（ウェイクワード検出後の自動開始用）"""
