@@ -30,6 +30,7 @@ import wave
 from faster_whisper import WhisperModel
 
 # LLM Face Controllerのインポート
+sys.path.append('/Users/kotaniryota/NLAB/LocalLLM_Test/core')
 from llm_face_controller import LLMFaceController
 
 class VoiceRecorder(QThread):

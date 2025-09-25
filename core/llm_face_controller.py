@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 
 # LMStudioクライアントのインポート
-sys.path.append('/Users/kotaniryota/NLAB/LocalLLM_Test')
+sys.path.append('/Users/kotaniryota/NLAB/LocalLLM_Test/core')
 from main import LMStudioClient
 
 # AudioQuery音韻解析システムのインポート

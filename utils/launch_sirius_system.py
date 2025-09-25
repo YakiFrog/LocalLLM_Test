@@ -79,7 +79,7 @@ def start_ui():
         python_path = "./bin/python"
         
         ui_process = subprocess.Popen(
-            [python_path, "sync_siriusface.py"],
+            [python_path, "ui/sync_siriusface.py"],
             cwd="/Users/kotaniryota/NLAB/LocalLLM_Test",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
