@@ -37,20 +37,31 @@
 - 複数のプロンプト設定（カジュアル、技術的、教育的など）
 - LLMモデル設定の動的変更
 
-### � 音声入力機能（NEW!）
-- **高精度音声認識**: OpenAI Whisper（largeモデル）による日本語音声認識
-- **リアルタイム録音**: ワンクリックで音声録音開始・停止
+### 🎤 音声入力機能（NEW!）
+- **高精度音声認識**: OpenAI Whisper（largeモデル）とFaster-Whisper（mediumモデル）による日本語音声認識
+- **音声入力方式**:
+  - **手動録音**: ワンクリックで音声録音開始・停止
+  - **キーボードショートカット**: Vキーで音声入力のトグル操作
+  - **自動停止**: 2秒以上の無音状態で自動的に録音終了
+- **ウェイクワード検出（NEW!）**: 
+  - **リアルタイム監視**: 常時マイクから音声を監視
+  - **ウェイクワード**: 「シリウスくん」「シリウス」「こんにちは」「おはよう」など
+  - **自動応答**: ウェイクワード検出時に「はい、なんですか」と応答
+  - **ハンズフリー**: ウェイクワード後、自動的に音声入力開始
 - **音声品質最適化**: 
-  - 16kHz サンプリングレート（Whisper最適化）
+  - 48kHz サンプリングレート（MacBook Air最適化）
+  - 16kHz リサンプリング（Whisper最適化）
   - ノイズ除去・音量正規化
   - 最小録音時間制限（1秒以上）
 - **視覚的フィードバック**: 録音状態の色彩表示・進行状況表示
 - **自動テキスト変換**: 音声からテキストへの自動変換・入力欄への自動挿入
+- **自動送信**: 高精度（80%以上）の音声認識結果を確認なしで自動送信
 - **高精度設定**:
+  - Faster-Whisperによる2-4倍高速化と50%メモリ削減
   - 決定論的出力（temperature=0.0）
-  - ノイズフィルタリング
-  - 日本語特化プロンプト
-  - 句読点自動除去
+  - ビームサーチ最適化（beam_size=3）
+  - 日本語特化設定
+  - Voice Activity Detection（VAD）フィルター
 
 ### �🎭 表情制御機能
 - **10種類の表情モード**:
@@ -87,18 +98,19 @@ graph TB
         Settings[設定パネル<br/>表情・モデル・プロンプト]
     end
     
-    subgraph "統合制御層"
+        subgraph "統合制御層"
         Controller[llm_face_controller.py<br/>LLM統合制御]
         Parser[expression_parser.py<br/>表情解析]
         Validator[expression_validator.py<br/>タグ検証]
         VoiceRecorder[VoiceRecorder<br/>音声録音・認識]
-    end
-    
-    subgraph "外部サービス"
+        WakeWordDetector[WakeWordDetector<br/>ウェイクワード検出<br/>NEW!]
+        FastWhisper[Faster-Whisper<br/>高速音声認識<br/>NEW!]
+    end    subgraph "外部サービス"
         LM[LM Studio<br/>ローカルLLM]
         Voice_API[VOICEVOX<br/>AudioQuery]
         Face[表情サーバー<br/>main.py]
         Whisper[OpenAI Whisper<br/>large model]
+        FasterWhisper[Faster-Whisper<br/>medium model<br/>NEW!]
     end
     
     subgraph "シリウスハードウェア"
@@ -111,8 +123,8 @@ graph TB
     UI --> Controller
     Input --> Controller
     Voice --> VoiceRecorder
-    VoiceRecorder --> Whisper
-    Whisper --> Controller
+    VoiceRecorder --> FastWhisper
+    FastWhisper --> Controller
     Settings --> Controller
     
     Controller --> LM
@@ -120,6 +132,9 @@ graph TB
     Controller --> Face
     Controller --> Parser
     Controller --> Validator
+    
+    WakeWordDetector --> FasterWhisper
+    WakeWordDetector --> Controller
     
     Parser --> Face
     Voice_API --> Speaker
@@ -336,17 +351,19 @@ pip install -r requirements.txt
 
 ```bash
 # LocalLLM_Test環境
-pip install PySide6 requests numpy qasync openai-whisper pyaudio SpeechRecognition
+pip install PySide6 requests numpy qasync openai-whisper faster-whisper pyaudio SpeechRecognition
 
 # sirius_face_anim環境  
 pip install voicevox_core numpy requests websockets
 ```
 
 #### 音声認識追加パッケージ
-- **openai-whisper**: 高精度音声認識エンジン
+- **openai-whisper**: 高精度音声認識エンジン（従来版）
+- **faster-whisper**: 高速・省メモリ音声認識エンジン（NEW!）
 - **pyaudio**: 音声録音・再生ライブラリ  
 - **SpeechRecognition**: 音声認識統合フレームワーク
 - **ffmpeg**: 音声ファイル処理（システムレベル）
+- **numpy**: 音声データ処理・数値計算
 
 #### macOS追加設定
 ```bash
@@ -400,14 +417,28 @@ python sync_siriusface.py
 3. **入力クリア**: Escキーで入力欄をクリア
 
 #### 🎤 音声入力（NEW!）
-1. **録音開始**: 「🎤 音声入力開始」ボタンをクリック
+1. **手動音声入力**:
+   - 「🎤 音声入力開始」ボタンをクリック
+   - Vキーでのショートカット操作も可能
 2. **音声録音**: マイクに向かって**はっきりと**日本語で話す
    - 推奨録音時間: 1-10秒
    - 推奨距離: マイクから5-10cm
    - 静かな環境で録音
-3. **録音停止**: 「⏹️ 音声入力停止」ボタンをクリック
+3. **自動停止**: 2秒以上の無音で自動的に録音終了
 4. **自動変換**: 音声が自動的にテキストに変換され入力欄に挿入
-5. **確認・送信**: 認識結果を確認後、送信ボタンで会話開始
+5. **自動送信**: 高精度（80%以上）の場合、確認なしで自動送信
+
+#### 🔊 ウェイクワード音声入力（NEW!）
+1. **リアルタイム監視開始**: 「リアルタイム監視」ボタンをクリック
+2. **ウェイクワード発声**: 以下のいずれかをはっきりと発声
+   - 「シリウスくん」（推奨）
+   - 「シリウス」
+   - 「こんにちは」（認識しやすい）
+   - 「おはよう」
+   - 「起きて」
+3. **自動応答**: システムが「はい、なんですか」と応答
+4. **音声入力開始**: 自動的に音声録音が開始
+5. **完全ハンズフリー**: 以降は自動停止・認識・送信まで自動実行
 
 #### 設定変更
 - **表情**: 初期表情を選択
@@ -433,18 +464,41 @@ python sync_siriusface.py
 
 ### 🎤 音声入力設定
 
-#### Whisper設定
+#### Faster-Whisper設定（NEW!）
 ```python
-# VoiceRecorder クラス内設定
-whisper_settings = {
-    "model": "large",                    # 高精度モデル（base/large選択可）
+# VoiceRecorder クラス内設定（高速化版）
+faster_whisper_settings = {
+    "model_size": "medium",              # 精度と速度のバランス（base/medium/large）
+    "device": "cpu",                     # CPU最適化
+    "compute_type": "int8",              # 8bit量子化で50%メモリ削減
     "language": "ja",                    # 日本語特化
     "temperature": 0.0,                  # 決定論的出力
-    "fp16": False,                      # CPU最適化
-    "compression_ratio_threshold": 2.4,  # ノイズ除去
-    "logprob_threshold": -1.0,          # 低信頼度フィルタ
-    "no_speech_threshold": 0.6,         # 無音判定
-    "initial_prompt": "以下は日本語の音声です。"  # コンテキスト設定
+    "beam_size": 3,                      # ビームサーチで精度向上
+    "no_speech_threshold": 0.2,          # 音声なし判定を緩く
+    "condition_on_previous_text": False, # 前テキストに依存しない
+    "vad_filter": True,                  # Voice Activity Detection有効
+    "vad_parameters": {
+        "min_silence_duration_ms": 500   # 短い無音期間を許容
+    }
+}
+```
+
+#### ウェイクワード検出設定（NEW!）
+```python
+# リアルタイム監視設定
+wake_word_settings = {
+    "wake_words": [
+        "シリウスくん", "シリウス君", "しりうすくん",  # メインワード
+        "シリウス", "しりうす", "シリウスさん",        # 簡略形
+        "こんにちは", "おはよう", "起きて"             # 代替ワード
+    ],
+    "sample_rate": 48000,                # MacBook Air マイク最適化
+    "chunk_size": 1024,                  # バッファサイズ
+    "buffer_duration": 3.0,              # 音声バッファ時間（秒）
+    "check_interval": 1.5,               # 検出間隔（秒）
+    "volume_threshold": 20,              # 音声レベル閾値（低感度）
+    "device_index": 1,                   # MacBook Air内蔵マイク
+    "auto_response": "はい、なんですか"    # ウェイクワード検出時応答
 }
 ```
 
@@ -452,11 +506,14 @@ whisper_settings = {
 ```python
 # VoiceRecorder音質設定
 audio_settings = {
-    "sample_rate": 16000,        # Whisper推奨サンプリングレート
+    "sample_rate": 48000,        # MacBook Air マイク最適化
+    "target_sample_rate": 16000, # Whisper用リサンプリング
     "chunk_size": 1024,          # バッファサイズ
     "channels": 1,               # モノラル録音
     "format": "paInt16",         # 16bit PCM
-    "min_record_time": 1.0       # 最小録音時間（秒）
+    "min_record_time": 1.0,      # 最小録音時間（秒）
+    "silence_threshold": 2.0,    # 自動停止の無音時間（秒）
+    "auto_send_threshold": 0.8   # 自動送信の信頼度閾値（80%）
 }
 ```
 
@@ -466,6 +523,8 @@ audio_settings = {
 3. **🗣️ 明瞭な発音**: ゆっくり・はっきりと話す
 4. **⏱️ 適切な長さ**: 1-10秒程度の発話
 5. **⏸️ 間を置く**: 話し終わったら1秒程度待ってから停止
+6. **🎯 ウェイクワード**: 「こんにちは」が最も認識しやすい
+7. **🔊 音量調整**: マイクの音量を最大レベルに設定
 
 ### 設定ファイル
 
@@ -674,16 +733,31 @@ python test_mistral_model.py
   - はっきりと明瞭に発音
   - 1-10秒の適切な長さで話す
 
-##### 3. Whisperモデルのロードが遅い
-- **原因**: largeモデルのサイズ（約3GB）
+##### 3. ウェイクワード検出が反応しない（NEW!）
+- **原因**: 音声レベル閾値が高すぎる・マイク設定
+- **解決**:
+  - マイク音量を最大レベルに設定
+  - より認識しやすい「こんにちは」「おはよう」を試す
+  - マイクに近づいて（5cm以内）明確に発音
+  - システム音量とは別にマイク入力音量を確認
+
+##### 4. Faster-Whisperモデルのロードが遅い（NEW!）
+- **原因**: mediumモデルのサイズ（約1.5GB）
 - **解決**:
   - 初回のみダウンロードが発生（時間がかかる）
-  - 十分なストレージ容量を確保
+  - 十分なストレージ容量を確保（3GB以上推奨）
   - ネットワーク環境を確認
 
-##### 4. "FP16 is not supported on CPU"警告
+##### 5. "FP16 is not supported on CPU"警告
 - **原因**: CPUでのFP16処理警告（正常動作）
 - **解決**: 警告は自動で抑制済み・動作に影響なし
+
+##### 6. リアルタイム監視が停止する
+- **原因**: 長時間の無音・システムリソース不足
+- **解決**:
+  - 監視ボタンを再クリックして再開
+  - システムのCPU使用率を確認
+  - メモリ不足の場合は他のアプリを終了
 
 #### 🎭 システム全般
 
