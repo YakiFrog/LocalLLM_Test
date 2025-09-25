@@ -40,7 +40,8 @@ class ExpressionParser:
     
     def parse_expression_text(self, text: str) -> List[ExpressionSegment]:
         """
-        表情タグ付きテキストを解析してセグメントに分割
+        表情タグ付きテキストを解析してセグメントに分割（改良版）
+        ネストしたタグや複雑な構造に対応
         
         Args:
             text: 解析するテキスト
@@ -48,71 +49,145 @@ class ExpressionParser:
         Returns:
             ExpressionSegmentのリスト
         """
-        # まず無効なタグを処理
+        # 前処理：無効なタグを削除
         processed_text = self._remove_invalid_tags(text)
         
         segments = []
+        
+        # より柔軟な解析：外側から内側へ段階的に処理
+        segments = self._parse_recursive(processed_text, 'neutral')
+        
+        # 空のセグメントを除去
+        segments = [seg for seg in segments if seg.text.strip()]
+        
+        return segments
+    
+    def _parse_recursive(self, text: str, default_expression: str) -> List[ExpressionSegment]:
+        """
+        再帰的にタグを解析してセグメントを作成
+        """
+        segments = []
         current_pos = 0
         
-        for match in self.expression_pattern.finditer(processed_text):
+        # 最も外側のタグを見つける
+        matches = list(self.expression_pattern.finditer(text))
+        
+        if not matches:
+            # タグがない場合はそのままセグメントとして追加
+            if text.strip():
+                segments.append(ExpressionSegment(
+                    text=text,
+                    expression=default_expression,
+                    start_pos=0,
+                    end_pos=len(text)
+                ))
+            return segments
+        
+        for match in matches:
             expression = match.group(1).lower()
             content = match.group(2)
             start = match.start()
             end = match.end()
             
-            # タグの前のテキスト（通常の表情）
+            # タグの前のテキスト
             if start > current_pos:
-                before_text = processed_text[current_pos:start]
+                before_text = text[current_pos:start]
                 if before_text.strip():
                     segments.append(ExpressionSegment(
                         text=before_text,
-                        expression='neutral',
+                        expression=default_expression,
                         start_pos=current_pos,
                         end_pos=start
                     ))
             
-            # 表情タグ内のテキスト（有効なタグのみ）
+            # タグ内のコンテンツを処理
             if expression in self.valid_expressions:
-                segments.append(ExpressionSegment(
-                    text=content,
-                    expression=expression,
-                    start_pos=start,
-                    end_pos=end
-                ))
+                # 有効な表情タグの場合、内容をさらに解析
+                inner_segments = self._parse_recursive(content, expression)
+                if inner_segments:
+                    segments.extend(inner_segments)
+                else:
+                    # 内容がない場合はそのまま追加
+                    if content.strip():
+                        segments.append(ExpressionSegment(
+                            text=content,
+                            expression=expression,
+                            start_pos=start,
+                            end_pos=end
+                        ))
             else:
-                # 無効な表情タグの内容をプレーンテキストとして追加
-                if content.strip():
-                    segments.append(ExpressionSegment(
-                        text=content,
-                        expression='neutral',
-                        start_pos=start,
-                        end_pos=end
-                    ))
+                # 無効な表情タグの場合、デフォルト表情で内容を処理
+                inner_segments = self._parse_recursive(content, default_expression)
+                segments.extend(inner_segments)
             
             current_pos = end
         
         # 残りのテキスト
-        if current_pos < len(processed_text):
-            remaining_text = processed_text[current_pos:]
+        if current_pos < len(text):
+            remaining_text = text[current_pos:]
             if remaining_text.strip():
                 segments.append(ExpressionSegment(
                     text=remaining_text,
-                    expression='neutral',
+                    expression=default_expression,
                     start_pos=current_pos,
-                    end_pos=len(processed_text)
+                    end_pos=len(text)
                 ))
         
         return segments
     
     def remove_expression_tags(self, text: str) -> str:
-        """表情タグを除去してプレーンテキストを取得"""
-        # まず無効なタグを削除
-        cleaned_text = self._remove_invalid_tags(text)
-        # 正しいタグのコンテンツのみを残す
-        return self.expression_pattern.sub(r'\2', cleaned_text)
+        """表情タグを除去してプレーンテキストを取得（改良版）"""
+        # 複数回処理してネストしたタグと不正なタグを除去
+        cleaned_text = text
+        
+        # Step 1: 完全にマッチするタグのペアを処理
+        # 正常なタグ: <happy>テキスト</happy>
+        cleaned_text = self.expression_pattern.sub(r'\2', cleaned_text)
+        
+        # Step 2: 不正な形式のタグを除去
+        # ネストしたタグや不完全なタグを処理
+        cleaned_text = self._clean_malformed_tags(cleaned_text)
+        
+        # Step 3: 残った単体タグを除去
+        # <happy>や</happy>のような単体のタグを削除
+        cleaned_text = re.sub(r'</?(\w+)>', '', cleaned_text)
+        
+        # Step 4: 余分な空白を整理
+        cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
+        cleaned_text = cleaned_text.strip()
+        
+        return cleaned_text
+    
+    def _clean_malformed_tags(self, text: str) -> str:
+        """不正な形式のタグをクリーンアップ"""
+        result = text
+        
+        # パターン1: <wink>テキスト<happy>テキスト</happy></wink>
+        # 内側の正しいタグを最初に処理
+        while True:
+            old_result = result
+            result = self.expression_pattern.sub(r'\2', result)
+            if result == old_result:  # 変化がなくなったら終了
+                break
+        
+        # パターン2: 不完全なタグや重複したタグを削除
+        # </happy><sad>や<happy><sad>のような組み合わせ
+        result = re.sub(r'</\w+><\w+>', ' ', result)
+        result = re.sub(r'<\w+><\w+>', '<', result)  # 開始タグの連続
+        result = re.sub(r'</\w+></\w+>', '', result)  # 終了タグの連続
+        
+        # パターン3: 閉じタグのない開始タグ
+        # <happy>テキスト（対応する</happy>がない場合）
+        # 有効な表情タグの開始タグのみを削除
+        for expr in self.valid_expressions:
+            # 対応する閉じタグがない開始タグを削除
+            pattern = f'<{expr}>(?!.*</{expr}>)'
+            result = re.sub(pattern, '', result, flags=re.DOTALL)
+        
+        return result
     
     def _remove_invalid_tags(self, text: str) -> str:
-        """無効な表情タグを除去"""
+        """無効な表情タグを除去（改良版）"""
         result = text
         
         # 無効な表情タグを削除してコンテンツのみを残す
@@ -120,15 +195,23 @@ class ExpressionParser:
             # <thinking>...</thinking> 形式を削除
             invalid_pattern = re.compile(f'<{invalid_expr}>(.*?)</{invalid_expr}>', re.DOTALL)
             result = invalid_pattern.sub(r'\1', result)
-            # <thinking>...<thinking> 形式も削除
+            
+            # <thinking>...<thinking> 形式も削除（閉じタグの代わりに開始タグ）
             malformed_pattern = re.compile(f'<{invalid_expr}>(.*?)<{invalid_expr}>', re.DOTALL)
             result = malformed_pattern.sub(r'\1', result)
         
-        # ネストしたタグの問題を解決
-        # <happy><excited>text</happy> のようなケースで、<excited>を除去
+        # 無効な表情タグの単体タグを削除
         for invalid_expr in self.invalid_expressions:
-            # 開始タグのみを削除
-            result = re.sub(f'<{invalid_expr}>', '', result)
+            # 開始タグと終了タグの両方を削除
+            result = re.sub(f'</?{invalid_expr}>', '', result)
+        
+        # 存在しない表情タグも削除（valid_expressions以外）
+        # ただし、一般的なHTMLタグは保持
+        all_tags = re.findall(r'</?(\w+)>', result)
+        for tag in set(all_tags):
+            if tag.lower() not in self.valid_expressions and tag.lower() not in {'br', 'p', 'div', 'span'}:
+                # 不明なタグを削除
+                result = re.sub(f'</?{tag}>', '', result, flags=re.IGNORECASE)
         
         return result
 
@@ -304,14 +387,24 @@ async def test_expression_parser():
     """表情解析のテスト"""
     parser = ExpressionParser()
     
-    # テストケース
+    # テストケース（問題のあるケースを含む）
     test_texts = [
         "今日の天気は<happy>晴れ</happy>です！でも明日は<sad>雨</sad>かもしれません。",
         "<excited>おはようございます！</excited>今日も<happy>素敵な一日</happy>になりそうですね。",
         "普通のテキストです。",
-        "<angry>これは怒ってます</angry>が、<neutral>落ち着いて</neutral>話しましょう。"
+        "<angry>これは怒ってます</angry>が、<neutral>落ち着いて</neutral>話しましょう。",
+        # 問題のあるケース
+        "<wink>いいね！ まずは幸せな顔にするのだ！ <happy>わー、笑顔になったよ</happy></wink>",
+        "<surprised>次はびっくりした顔！ <surprised>あれ？ 目が丸くなったよ</surprised></wink>",
+        "<sad>悲しい顔もできるのだ... <sad>う～ん、泣きそうになった...</sad></wink>",
+        "<angry>怒った顔も！ <angry>ガッ! ちょっとむっとしたよ</angry></wink>",
+        "<neutral>でも普通の顔にも戻るのだ！</neutral>",
+        # より複雑なネストケース
+        "<happy>外側<sad>内側テキスト</sad>また外側</happy>",
+        "<wink>開始<happy>中間<surprised>深い</surprised>中間</happy>終了</wink>"
     ]
     
+    print("=== 表情タグ除去テスト ===")
     for i, text in enumerate(test_texts, 1):
         print(f"\n--- テストケース {i} ---")
         print(f"元テキスト: {text}")
@@ -322,7 +415,14 @@ async def test_expression_parser():
         print(f"クリーンテキスト: {clean_text}")
         print("セグメント:")
         for j, seg in enumerate(segments):
-            print(f"  {j+1}: '{seg.text}' -> {seg.expression}")
+            print(f"  {j+1}: '{seg.text.strip()}' -> {seg.expression}")
+        
+        # 残ったタグをチェック
+        remaining_tags = re.findall(r'<[^>]*>', clean_text)
+        if remaining_tags:
+            print(f"⚠️  残存タグ: {remaining_tags}")
+        else:
+            print("✅ タグが完全に除去されました")
 
 async def test_realtime_controller():
     """リアルタイム表情制御のテスト"""
