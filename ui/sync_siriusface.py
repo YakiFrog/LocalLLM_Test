@@ -692,7 +692,32 @@ class ConversationWorker(QThread):
         self.model_setting = model_setting
         self.prompt = prompt
         self._is_running = False
+        self._force_stop = False  # 強制停止フラグ
         self.timeout_timer = None
+    
+    def force_stop(self):
+        """強制停止メソッド"""
+        logger.info("🚨 ConversationWorker強制停止が要求されました")
+        self._force_stop = True
+        self._is_running = False
+        
+        # スレッドの強制終了
+        if self.isRunning():
+            self.quit()
+            if not self.wait(2000):  # 2秒待機
+                logger.warning("⚠️ スレッド強制終了")
+                self.terminate()
+        
+        # エラー結果を返す
+        result = {
+            "success": False,
+            "user_message": self.user_message,
+            "llm_response": None,
+            "voice_success": False,
+            "expression_success": False,
+            "error": "処理が強制停止されました"
+        }
+        self.conversation_finished.emit(result)
     
     def run(self):
         """ワーカースレッドの実行"""
@@ -716,37 +741,89 @@ class ConversationWorker(QThread):
                 if not self._is_running:
                     return
                 
-                # LLMモデル設定を変更
+                # LLMモデル設定を変更（タイムアウト付き）
                 self.progress_update.emit("LLMモデル設定を変更中...")
-                self.controller.set_llm_setting(self.model_setting)
+                try:
+                    model_start = time.time()
+                    model_future = loop.run_in_executor(None, self.controller.set_llm_setting, self.model_setting)
+                    loop.run_until_complete(asyncio.wait_for(model_future, timeout=10.0))
+                    logger.info(f"⚡ モデル設定完了: {time.time() - model_start:.2f}秒")
+                except asyncio.TimeoutError:
+                    logger.error("❌ モデル設定タイムアウト（10秒）")
+                    self.progress_update.emit("⚠️ モデル設定でタイムアウトが発生しました")
+                    # エラーを投げずに続行
                 
-                # プロンプト設定を変更
+                # プロンプト設定を変更（タイムアウト付き）
                 self.progress_update.emit("プロンプト設定を変更中...")
-                self.controller.set_prompt(self.prompt)
+                try:
+                    prompt_start = time.time()
+                    prompt_future = loop.run_in_executor(None, self.controller.set_prompt, self.prompt)
+                    loop.run_until_complete(asyncio.wait_for(prompt_future, timeout=5.0))
+                    logger.info(f"⚡ プロンプト設定完了: {time.time() - prompt_start:.2f}秒")
+                except asyncio.TimeoutError:
+                    logger.error("❌ プロンプト設定タイムアウト（5秒）")
+                    self.progress_update.emit("⚠️ プロンプト設定でタイムアウトが発生しました")
+                    # エラーを投げずに続行
                 
-                # ⚡ タイムアウト短縮と高速化（60秒→40秒）
+                # ⚡ タイムアウト短縮と高速化（段階的タイムアウト監視）
+                # 強制停止チェック
+                if self._force_stop or not self._is_running:
+                    logger.info("🚨 LLM処理開始前に停止されました")
+                    return
+                
                 self.progress_update.emit("🚀 LLM応答処理中...")
                 
                 try:
                     start_time = time.time()
+                    
+                    # 段階的タイムアウト監視とタイムアウト処理
+                    async def monitor_progress():
+                        for i in range(3):  # 10秒x3回 = 30秒
+                            await asyncio.sleep(10)
+                            # 強制停止チェック
+                            if self._force_stop or not self._is_running:
+                                return
+                            elapsed = time.time() - start_time
+                            if elapsed > 10 * (i + 1):
+                                self.progress_update.emit(f"🔄 LLM応答待機中... ({elapsed:.0f}秒経過)")
+                                logger.info(f"⏳ LLM処理進行中: {elapsed:.1f}秒経過")
+                    
+                    # メイン処理と監視を並列実行
+                    main_task = self.controller.process_user_input(self.user_message, self.expression)
+                    monitor_task = monitor_progress()
+                    
+                    # タイムアウト付きで実行
                     result = loop.run_until_complete(
                         asyncio.wait_for(
-                            self.controller.process_user_input(self.user_message, self.expression),
-                            timeout=40.0  # 60→40秒に短縮
+                            asyncio.ensure_future(main_task),
+                            timeout=30.0  # 30秒タイムアウト
                         )
                     )
+                    
                     elapsed_time = time.time() - start_time
                     logger.info(f"⚡ 対話処理時間: {elapsed_time:.2f}秒")
                     
                 except asyncio.TimeoutError:
-                    self.progress_update.emit("⚠️ タイムアウトエラー（40秒）")
+                    self.progress_update.emit("⚠️ タイムアウトエラー（30秒）")
+                    logger.error("❌ LLM処理タイムアウト（30秒）")
                     result = {
                         "success": False,
                         "user_message": self.user_message,
                         "llm_response": None,
                         "voice_success": False,
                         "expression_success": False,
-                        "error": "処理がタイムアウトしました（40秒）。音声合成または表情制御に問題がある可能性があります。"
+                        "error": "LLM処理がタイムアウトしました（30秒）。サーバーの応答が遅い可能性があります。"
+                    }
+                except Exception as e:
+                    self.progress_update.emit(f"❌ LLM処理エラー: {str(e)}")
+                    logger.error(f"❌ LLM処理エラー: {str(e)}")
+                    result = {
+                        "success": False,
+                        "user_message": self.user_message,
+                        "llm_response": None,
+                        "voice_success": False,
+                        "expression_success": False,
+                        "error": f"LLM処理でエラーが発生しました: {str(e)}"
                     }
                 
                 # スレッドが中断されていないかチェック
@@ -789,6 +866,7 @@ class ConversationWorker(QThread):
     def stop_gracefully(self):
         """スレッドの優雅な停止"""
         self._is_running = False
+        self.force_stop()  # 強制停止も実行
 
 class PromptEditDialog(QDialog):
     """プロンプト編集ダイアログ"""
