@@ -1,0 +1,41 @@
+# シリウス音声対話システム - 必要パッケージ一覧
+# sirius_main.py -> sync_siriusface.py 起動用
+
+# PySide6 - GUIフレームワーク
+PySide6
+
+# 音声処理関連
+pyaudio           # マイク録音・音声デバイス制御
+SpeechRecognition # 音声認識（speech_recognition）
+faster-whisper    # 高速音声認識（OpenAI Whisper）
+wave              # WAVファイル処理（標準ライブラリだが明記）
+
+# 数値処理・科学計算
+numpy            # 数値計算
+
+# HTTP通信
+requests         # HTTP API通信（LM Studio, VOICEVOX API）
+
+# VOICEVOX Core（音声合成）
+# 注意: voicevox_coreは手動インストールが必要な場合があります
+# pip install voicevox-core
+
+# 標準ライブラリ（参考として記載）
+# asyncio         # 非同期処理（標準ライブラリ）
+# json            # JSON処理（標準ライブラリ）
+# logging         # ログ出力（標準ライブラリ）
+# pathlib         # パス操作（標準ライブラリ）
+# typing          # 型ヒント（標準ライブラリ）
+# threading       # スレッド処理（標準ライブラリ）
+# time            # 時刻処理（標準ライブラリ）
+# os              # OS操作（標準ライブラリ）
+# sys             # システム情報（標準ライブラリ）
+# re              # 正規表現（標準ライブラリ）
+# tempfile        # 一時ファイル（標準ライブラリ）
+# subprocess      # サブプロセス実行（標準ライブラリ）
+# io              # I/O操作（標準ライブラリ）
+# datetime        # 日時処理（標準ライブラリ）
+
+# 開発・デバッグ用（オプション）
+# colorlog        # カラーログ出力
+# pytest          # テスト実行
