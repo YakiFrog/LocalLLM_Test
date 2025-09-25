@@ -320,17 +320,40 @@ class LLMFaceController:
                     logger.info(f"クリーンテキスト: {clean_text}")
                     logger.info(f"表情セグメント数: {len(segments)}")
                     
-                    # クリーンテキストでリアルタイム表情制御を実行
-                    success = await self.realtime_expression_controller.speak_with_dynamic_expressions(
-                        text, "neutral"
-                    )
+                    # タイムアウト付きでリアルタイム表情制御を実行（30秒）
+                    try:
+                        success = await asyncio.wait_for(
+                            self.realtime_expression_controller.speak_with_dynamic_expressions(
+                                text, "neutral"
+                            ),
+                            timeout=30.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error("リアルタイム表情制御がタイムアウトしました（30秒）")
+                        success = False
                 else:
                     logger.info("表情タグなし、通常の発話を実行します")
-                    success = await self.voice_controller.speak_with_audioquery_lipsync(text, style_id)
+                    # タイムアウト付きで通常の音声合成を実行（20秒）
+                    try:
+                        success = await asyncio.wait_for(
+                            self.voice_controller.speak_with_audioquery_lipsync(text, style_id),
+                            timeout=20.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error("音声合成がタイムアウトしました（20秒）")
+                        success = False
             else:
                 # 通常のAudioQuery音韻解析による発話
                 logger.info("通常の発話を実行します")
-                success = await self.voice_controller.speak_with_audioquery_lipsync(text, style_id)
+                # タイムアウト付きで音声合成を実行（20秒）
+                try:
+                    success = await asyncio.wait_for(
+                        self.voice_controller.speak_with_audioquery_lipsync(text, style_id),
+                        timeout=20.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("音声合成がタイムアウトしました（20秒）")
+                    success = False
             
             if success:
                 logger.info("音声合成完了")
@@ -344,6 +367,7 @@ class LLMFaceController:
             return False
         finally:
             self.is_speaking = False
+            logger.info("音声合成処理終了、is_speakingフラグをリセット")
     
     def set_expression(self, expression: str) -> bool:
         """
@@ -390,9 +414,19 @@ class LLMFaceController:
             if expression:
                 result["expression_success"] = self.set_expression(expression)
             
-            # 2. LLM応答取得
+            # 2. LLM応答取得（タイムアウト: 30秒）
             logger.info(f"ユーザー入力処理開始: {user_message[:30]}...")
-            llm_response = self.get_llm_response(user_message)
+            try:
+                # LLM応答取得を非同期化してタイムアウト処理
+                loop = asyncio.get_event_loop()
+                llm_response = await asyncio.wait_for(
+                    loop.run_in_executor(None, self.get_llm_response, user_message),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                result["error"] = "LLM応答がタイムアウトしました（30秒）"
+                logger.error("LLM応答がタイムアウトしました（30秒）")
+                return result
             
             if not llm_response:
                 result["error"] = "LLMから応答を取得できませんでした"
@@ -400,7 +434,7 @@ class LLMFaceController:
             
             result["llm_response"] = llm_response
             
-            # 3. 音声合成とリップシンク
+            # 3. 音声合成とリップシンク（既にタイムアウト処理済み）
             voice_success = await self.speak_with_lipsync(llm_response)
             result["voice_success"] = voice_success
             

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QTabWidget
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QThread
-from PySide6.QtGui import QFont, QIcon, QPalette, QColor
+from PySide6.QtGui import QFont, QIcon, QPalette, QColor, QShortcut, QKeySequence
 
 # 音声関連のインポート
 import speech_recognition as sr
@@ -2392,6 +2392,13 @@ class SiriusFaceAnimUI(QMainWindow):
         
         # プロンプト一覧を初期化
         self.update_prompt_list()
+        
+        # 緊急停止キーボードショートカット（Ctrl+Alt+R）
+        self.emergency_stop_shortcut = QShortcut(QKeySequence("Ctrl+Alt+R"), self)
+        self.emergency_stop_shortcut.activated.connect(self.emergency_reset)
+        
+        # 緊急停止の説明をシステムメッセージに追加
+        self.conversation_display.add_system_message("🚨 緊急停止: システムが応答しない場合は Ctrl+Alt+R キーを押してください", "warning")
     
     def update_prompt_list(self):
         """プロンプト一覧を更新"""
@@ -2599,6 +2606,58 @@ class SiriusFaceAnimUI(QMainWindow):
                 if voice_recorder.isRunning():
                     voice_recorder.quit()
                     voice_recorder.wait(1000)  # さらに1秒待機
+    
+    def emergency_reset(self):
+        """緊急停止・リセット機能"""
+        try:
+            self.add_log("🚨 緊急停止が実行されました", "warning")
+            self.conversation_display.add_system_message("🚨 緊急停止実行中...", "warning")
+            
+            # 1. 音声合成を強制停止
+            if self.controller and hasattr(self.controller, 'voice_controller'):
+                try:
+                    if hasattr(self.controller.voice_controller, 'stop_speaking'):
+                        self.controller.voice_controller.stop_speaking()
+                    self.add_log("音声合成を強制停止", "info")
+                except Exception as e:
+                    self.add_log(f"音声合成停止エラー: {e}", "error")
+            
+            # 2. is_speakingフラグを強制リセット
+            if self.controller:
+                try:
+                    self.controller.is_speaking = False
+                    self.add_log("is_speakingフラグを強制リセット", "info")
+                except Exception as e:
+                    self.add_log(f"is_speakingリセットエラー: {e}", "error")
+            
+            # 3. ワーカースレッドを強制終了
+            self.cleanup_worker_thread()
+            
+            # 4. UIを復元
+            self.input_panel.set_enabled(True)
+            self.status_panel.set_status("緊急停止完了 - 準備完了")
+            
+            # 5. 音声録音を停止
+            if hasattr(self.input_panel, 'voice_recorder'):
+                try:
+                    voice_recorder = self.input_panel.voice_recorder
+                    if voice_recorder.is_recording:
+                        voice_recorder.stop_recording()
+                    self.add_log("音声録音を停止", "info")
+                except Exception as e:
+                    self.add_log(f"音声録音停止エラー: {e}", "error")
+            
+            self.conversation_display.add_system_message("✅ 緊急停止完了 - システムをリセットしました", "success")
+            self.add_log("緊急停止・リセット完了", "success")
+            
+        except Exception as e:
+            error_msg = f"緊急停止処理でエラーが発生しました: {e}"
+            print(error_msg)
+            try:
+                self.add_log(error_msg, "error")
+                self.conversation_display.add_system_message(f"❌ {error_msg}", "error")
+            except:
+                pass  # ログ出力も失敗した場合は何もしない
     
     def keyPressEvent(self, event):
         """キーボードイベント処理"""
